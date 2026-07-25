@@ -1,0 +1,8 @@
+flask==3.1.3
+python-dotenv==1.2.2
+openai==2.44.0
+selenium==4.45.0
+webdriver-manager==4.1.2
+# Routes TLS through the OS trust store so OpenAI / webdriver-manager work behind
+# corporate TLS-intercepting proxies (httpx/requests use certifi otherwise).
+truststore==0.10.1
