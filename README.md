@@ -314,7 +314,10 @@ branch/commit conventions and the ruff lint gate.
 ## Maintenance: Selector Health Check
 
 LinkedIn changes its DOM every few months, which breaks the scraper's CSS
-selectors. `linkedin_automation/selector_health.py` detects this:
+selectors. This is the project's one recurring chore — **[docs/MAINTENANCE.md](docs/MAINTENANCE.md)
+is the full runbook** (symptoms, the exact durable hooks to target, which
+constant to edit in which module, and the hard-won gotchas). The short version:
+`linkedin_automation/selector_health.py` detects the breakage:
 
 ```bash
 uv run python -m linkedin_automation.selector_health --profile <name>
