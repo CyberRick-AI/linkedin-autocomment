@@ -12,8 +12,14 @@ uv pip install -r requirements-dev.txt   # pytest, pytest-cov, ruff
 ```
 
 Python 3.12 on Windows is the reference environment (Selenium drives your real
-Chrome). The core library code is cross-platform, but the `.bat` launchers and
-the Windows Task Scheduler notes are Windows-specific.
+Chrome). macOS is supported and the suite runs there too; the Windows Task
+Scheduler notes remain Windows-specific.
+
+Anything that genuinely differs per OS belongs in
+`linkedin_automation/platform_compat.py` — currently the comment-submit modifier
+(Command on macOS, Control elsewhere) and the clipboard reader (`pbpaste`,
+PowerShell `Get-Clipboard`, `xclip`/`xsel`). Keep platform checks out of the
+other modules, and build paths with `os.path` rather than literal separators.
 
 ## Project layout
 

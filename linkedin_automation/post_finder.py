@@ -11,7 +11,6 @@ import re
 import sys
 import random
 import hashlib
-import subprocess
 from datetime import datetime
 from typing import List, Optional, Tuple, Set
 from dataclasses import dataclass, field, asdict
@@ -28,6 +27,7 @@ import logging
 from . import profile_manager as pm
 from . import human_behavior as hb
 from . import post_store
+from . import platform_compat
 from .failure_capture import capture_failure
 
 load_dotenv()
@@ -558,12 +558,13 @@ class LinkedInScraper:
 
     @staticmethod
     def _get_clipboard() -> str:
-        """Read the Windows clipboard via PowerShell (fallback only)."""
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return (result.stdout or "").strip()
+        """Read the OS clipboard (fallback only).
+
+        Delegates to ``platform_compat``, which picks the right reader per OS:
+        pbpaste on macOS, PowerShell Get-Clipboard on Windows, xclip/xsel on
+        Linux. Returns "" when no clipboard is readable.
+        """
+        return platform_compat.read_clipboard()
 
     def _dismiss(self):
         """Press Escape to close any open dropdown/toast."""
@@ -589,8 +590,9 @@ class LinkedInScraper:
         JavaScript clipboard intercept (override navigator.clipboard.writeText and
         document.execCommand('copy')) so the copied permalink is captured into
         window.__interceptedClipboard WITHOUT ever touching the OS clipboard.
-        Fallback (with a warning): read the OS clipboard via PowerShell if the JS
-        intercept caught nothing (e.g. LinkedIn used an uncaptured copy path).
+        Fallback (with a warning): read the OS clipboard via the platform's own
+        helper if the JS intercept caught nothing (e.g. LinkedIn used an
+        uncaptured copy path).
         Returns a clean post URL or None. Best-effort: failures log and return None.
         """
         try:
@@ -633,8 +635,8 @@ class LinkedInScraper:
             # Fallback: OS clipboard only if the JS intercept caught nothing.
             if not clip:
                 self.logger.warning(
-                    "JS clipboard intercept returned null; falling back to OS "
-                    "clipboard (PowerShell Get-Clipboard)"
+                    "JS clipboard intercept returned null; falling back to the "
+                    "OS clipboard"
                 )
                 clip = self._get_clipboard()
 

@@ -24,11 +24,16 @@ a randomized, human-paced schedule.
 
 ## Quick Start
 
-On Windows you can just run `setup.bat` (installs deps, creates `.env`, makes
-`data/`) then `run.bat`. Or do it manually:
+> On a Mac? **[docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md)** walks through every
+> step from a clean machine, including the Gatekeeper prompt on first launch.
+
+On Windows run `setup.bat` (installs deps, creates `.env`, makes `data/`) then
+`run.bat`. On macOS and Linux run `./setup.sh` then `./run.sh` — or on a Mac,
+double-click `install.command` and then `run.command` from Finder. Or do it
+manually:
 
 ```bash
-# 1. Install uv (if you don't have it)
+# 1. Install uv (if you don't have it), then open a NEW terminal
 # Windows: powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 # Mac/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -69,6 +74,7 @@ linkedin-automation/
 │   ├── profile_manager.py              # Multi-profile credentials, sessions, exit codes, CLI
 │   ├── comment_fields.py               # Canonical comment-field normalization + TXT format
 │   ├── human_behavior.py               # Human-like browser behavior (mouse/typing/scroll/breaks)
+│   ├── platform_compat.py              # Per-OS shims (submit modifier, clipboard reader)
 │   ├── post_finder.py                  # Scrapes the feed + classifies ads/job cards
 │   ├── comment_generator.py            # GPT comment generation
 │   ├── comment_poster.py               # Posts comments via Selenium
@@ -89,7 +95,9 @@ linkedin-automation/
 ├── requirements.txt
 ├── requirements-dev.txt                # pytest, pytest-cov, ruff (pinned)
 ├── conftest.py                         # puts project root on sys.path for tests
-├── setup.bat / run.bat
+├── setup.bat / run.bat                 # Windows launchers
+├── setup.sh / run.sh                   # macOS + Linux launchers
+├── install.command / run.command       # macOS double-click launchers (Finder)
 ├── .env                                # Your API keys (create from .env.example)
 ├── .env.example
 ├── .gitignore

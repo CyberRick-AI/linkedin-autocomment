@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 import logging
 from . import profile_manager as pm
 from . import human_behavior as hb
+from . import platform_compat
 from .failure_capture import capture_failure
 
 load_dotenv()
@@ -405,20 +406,27 @@ class LinkedInCommentPoster:
         return False
     
     def post_comment_ctrl_enter(self, comment_input, comment_text):
-        """Try Ctrl+Enter to post comment."""
-        self.logger.info("Trying Ctrl+Enter shortcut...")
+        """Try the modifier+Enter shortcut to post a comment.
+
+        The modifier is platform-specific: Command on macOS, Control elsewhere.
+        Chrome on macOS does not route Ctrl+Enter to the page's submit handler,
+        so the Windows shortcut is silently swallowed there.
+        """
+        modifier = platform_compat.submit_modifier()
+        label = "Cmd+Enter" if platform_compat.IS_MACOS else "Ctrl+Enter"
+        self.logger.info(f"Trying {label} shortcut...")
         try:
             # Brief pause before the keyboard submit (a human doesn't fire the
             # shortcut the instant typing ends).
             hb.human_sleep(0.4, 1.0)
-            comment_input.send_keys(Keys.CONTROL + Keys.ENTER)
+            comment_input.send_keys(modifier + Keys.ENTER)
             hb.human_sleep(2.5, 3.5)
-            
+
             if self.verify_comment_posted(comment_input, comment_text):
-                self.logger.info("✅ Comment posted using Ctrl+Enter!")
+                self.logger.info(f"✅ Comment posted using {label}!")
                 return True
         except Exception as e:
-            self.logger.debug(f"Ctrl+Enter failed: {e}")
+            self.logger.debug(f"{label} failed: {e}")
         return False
     
     def post_comment_alternative_selectors(self, comment_input, comment_text):
