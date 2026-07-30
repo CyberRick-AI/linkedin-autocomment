@@ -35,7 +35,7 @@ A step-by-step walkthrough from a clean Windows machine to a running dashboard, 
 | OpenAI API key | Writes the comments and posts (model: `gpt-4o-mini`) | ~$5 credit |
 | A LinkedIn account | The account the tool will operate | — |
 
-Everything runs on your own computer. Your LinkedIn credentials are stored encrypted locally and are never uploaded. The only outbound service call is to OpenAI, for text generation.
+Everything runs on your own computer, and your LinkedIn credentials never leave it. The only outbound service call is to OpenAI, for text generation. See [Phase 4](#phase-4--create-your-linkedin-profile) for how those credentials are stored on disk.
 
 > [!TIP]
 > Keep the project folder **out of OneDrive, Desktop, or any synced directory**. The tool stores a live Chrome session inside its own folder, and file-sync software will corrupt it. A plain path like `C:\Projects\` is ideal.
@@ -49,7 +49,7 @@ Everything runs on your own computer. Your LinkedIn credentials are stored encry
 | 1 — Prerequisites | Install Chrome and uv, download the project | Yes |
 | 2 — Setup | Run `setup.bat`, which installs all dependencies | Yes |
 | 3 — API key | Paste your OpenAI key into the `.env` file | Yes |
-| 4 — Profile | Store your LinkedIn credentials encrypted | Yes |
+| 4 — Profile | Save your LinkedIn credentials locally | Yes |
 | 5 — Login | Log in once in Chrome; the session is saved | Yes |
 | 6 — Launch | Start the dashboard at `localhost:6500` | Each session |
 | 7 — Operate | Scrape, review, generate, review, post | Daily |
@@ -162,7 +162,7 @@ Find the `OPENAI_API_KEY` line near the top and replace the placeholder. Keep it
 Save with <kbd>Ctrl</kbd>+<kbd>S</kbd> and close Notepad.
 
 > [!NOTE]
-> Leave the `LINKEDIN_USERNAME` and `LINKEDIN_PASSWORD` lines commented out. Your LinkedIn credentials go in the next phase instead, where they are stored encrypted rather than sitting in a plain text file.
+> Leave the `LINKEDIN_USERNAME` and `LINKEDIN_PASSWORD` lines commented out. Your LinkedIn credentials go in the next phase instead, which keeps them out of this file and out of your shell environment.
 
 ---
 
@@ -174,7 +174,10 @@ A "profile" here means one LinkedIn account plus its saved browser session. Pick
 uv run python -m linkedin_automation.profile_manager add rick
 ```
 
-You will be prompted for your LinkedIn email and password. Special characters are fine. Credentials are encrypted and written to `data\profiles\profiles.json` on your machine only.
+You will be prompted for your LinkedIn email and password. Special characters are fine. Credentials are written to `data\profiles\profiles.json` on your machine and are never uploaded anywhere.
+
+> [!WARNING]
+> That file stores your password as **plain text**, not encrypted. It is covered by `.gitignore`, so it will not end up in a repository — but any program or person with access to the machine can read it. Use full-disk encryption (BitLocker or FileVault), keep the project folder off shared drives, and consider a LinkedIn password you do not reuse elsewhere.
 
 Verify:
 
