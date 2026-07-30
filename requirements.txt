@@ -6,3 +6,7 @@ webdriver-manager==4.1.2
 # Routes TLS through the OS trust store so OpenAI / webdriver-manager work behind
 # corporate TLS-intercepting proxies (httpx/requests use certifi otherwise).
 truststore==0.10.1
+# Stores LinkedIn passwords in the OS credential store (Keychain / Credential
+# Manager / Secret Service) instead of plain text in data/profiles/profiles.json.
+# Optional at runtime: profile_manager falls back to in-file storage without it.
+keyring==25.6.0

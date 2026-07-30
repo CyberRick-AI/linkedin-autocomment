@@ -96,7 +96,7 @@ linkedin-automation/
 ├── README.md / CONTRIBUTING.md / LICENSE
 └── data/                               # Auto-created at runtime (git-ignored)
     ├── profiles/
-    │   ├── profiles.json               # Encrypted credentials
+    │   ├── profiles.json               # Usernames + session paths (passwords live in the OS credential store)
     │   └── chrome_sessions/            # Per-profile Chrome data
     └── <profile_name>/
         ├── posts_db.json               # Central post lifecycle store (status per post)
@@ -224,7 +224,36 @@ uv run python -m linkedin_automation.profile_manager default <name>
 
 # Migrate from .env (auto-runs on first dashboard launch)
 uv run python -m linkedin_automation.profile_manager migrate
+
+# Move any plain-text passwords into the OS credential store
+uv run python -m linkedin_automation.profile_manager secure-credentials
 ```
+
+### Where your password is stored
+
+New profiles put the password in the **OS credential store** — Keychain on
+macOS, Credential Manager on Windows, Secret Service on Linux — and
+`profiles.json` keeps only the username, session path, and a
+`"password_location": "keyring"` marker.
+
+If you created profiles before this change, their passwords are still sitting in
+`profiles.json` as plain text. Move them across once:
+
+```bash
+uv run python -m linkedin_automation.profile_manager secure-credentials
+```
+
+The migration only clears a password from the file after the credential store
+has accepted it, so an interrupted run cannot lose it. Re-running is harmless.
+
+On machines with **no credential store** (headless Linux, minimal containers)
+everything still works — the password stays in `profiles.json`, exactly as
+before. `profiles.json` is covered by `.gitignore` either way, but a plain-text
+password there is readable by anything running as your user.
+
+> On macOS, the first read after rebuilding `.venv` may show a "wants to use
+> your confidential information" prompt, because the Keychain item is tied to
+> the binary that created it. Choose **Always Allow** and it will not ask again.
 
 ## Per-Profile Configuration
 
