@@ -24,6 +24,10 @@ a randomized, human-paced schedule.
 
 ## Quick Start
 
+> New to this, or stuck partway through? **[docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md)**
+> walks through every step from a clean machine, with a troubleshooting table for the
+> common setup failures.
+
 On Windows you can just run `setup.bat` (installs deps, creates `.env`, makes
 `data/`) then `run.bat`. Or do it manually:
 
