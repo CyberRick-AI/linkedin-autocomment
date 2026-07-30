@@ -30,6 +30,14 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
 
+# Optional: passwords go to the OS credential store when one is available.
+# Guarded so an existing checkout that hasn't reinstalled requirements still
+# imports and keeps working with in-file storage.
+try:
+    import keyring
+except Exception:  # pragma: no cover - exercised via the fallback tests
+    keyring = None
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -66,6 +74,131 @@ CHROME_SESSIONS_DIR = os.path.join(PROFILES_DIR, "chrome_sessions")
 
 os.makedirs(PROFILES_DIR, exist_ok=True)
 os.makedirs(CHROME_SESSIONS_DIR, exist_ok=True)
+
+
+# ─── Credential Storage ──────────────────────────────────────────────────────
+# Passwords belong in the OS credential store (Keychain on macOS, Credential
+# Manager on Windows, Secret Service on Linux), not in profiles.json. Each
+# profile records where its password lives:
+#
+#   "password_location": "keyring"  -> read it from the OS store
+#   "password_location": "file"     -> read the legacy "password" field
+#
+# Profiles written before this change have no marker and a populated
+# "password" field; they are treated as "file" and can be moved across with
+# migrate_passwords_to_keyring(). Machines with no keyring backend (headless
+# Linux, minimal containers) keep working on in-file storage.
+
+KEYRING_SERVICE = "linkedin-autocomment"
+LOCATION_KEYRING = "keyring"
+LOCATION_FILE = "file"
+
+
+def keyring_available() -> bool:
+    """True when a usable OS credential store is present."""
+    if keyring is None:
+        return False
+    try:
+        backend = keyring.get_keyring()
+    except Exception:
+        return False
+    # keyring installs a "fail" backend when nothing usable is found; its
+    # priority is 0 and any real backend scores higher.
+    return getattr(backend, "priority", 0) > 0
+
+
+def set_profile_password(name: str, password: str) -> str:
+    """Store ``password`` for profile ``name`` and return where it landed.
+
+    Returns ``LOCATION_KEYRING`` when the OS store accepted it, otherwise
+    ``LOCATION_FILE`` so the caller knows to keep the value in profiles.json.
+    """
+    if keyring_available():
+        try:
+            keyring.set_password(KEYRING_SERVICE, name, password)
+            return LOCATION_KEYRING
+        except Exception as e:
+            logger.warning(
+                "Could not write to the OS credential store (%s); "
+                "falling back to in-file storage for profile '%s'", e, name
+            )
+    return LOCATION_FILE
+
+
+def get_profile_password(profile: Dict, name: str = None) -> str:
+    """Return a profile's password, wherever it is stored.
+
+    ``name`` is only needed for keyring lookups; it falls back to the profile's
+    own recorded name when omitted.
+    """
+    location = profile.get("password_location")
+    if location is None:
+        # Legacy profile: no marker, password sits in the file.
+        return profile.get("password") or ""
+
+    if location == LOCATION_KEYRING:
+        lookup = name or profile.get("name")
+        if not lookup:
+            logger.error("Cannot read keyring password without a profile name")
+            return ""
+        try:
+            return keyring.get_password(KEYRING_SERVICE, lookup) or ""
+        except Exception as e:
+            logger.error("Could not read the OS credential store: %s", e)
+            return ""
+
+    return profile.get("password") or ""
+
+
+def delete_profile_password(name: str):
+    """Remove a profile's password from the OS store, if it is there."""
+    if not keyring_available():
+        return
+    try:
+        keyring.delete_password(KEYRING_SERVICE, name)
+    except Exception:
+        # Nothing stored under that name, or the store refused. Not fatal:
+        # remove_profile still drops the profile entry itself.
+        logger.debug("No keyring entry to delete for '%s'", name, exc_info=True)
+
+
+def migrate_passwords_to_keyring() -> Tuple[int, int]:
+    """Move any in-file passwords into the OS credential store.
+
+    Returns ``(moved, left_in_file)``. Safe to run repeatedly, and safe to
+    interrupt: a password is only cleared from profiles.json after the OS store
+    has accepted it.
+    """
+    if not keyring_available():
+        logger.warning(
+            "No OS credential store available; leaving passwords in profiles.json"
+        )
+        data = load_profiles()
+        return 0, len(data["profiles"])
+
+    data = load_profiles()
+    moved = 0
+    left = 0
+
+    for name, profile in data["profiles"].items():
+        if profile.get("password_location") == LOCATION_KEYRING:
+            continue
+        password = profile.get("password")
+        if not password:
+            continue
+
+        if set_profile_password(name, password) == LOCATION_KEYRING:
+            profile["password"] = None
+            profile["password_location"] = LOCATION_KEYRING
+            moved += 1
+        else:
+            left += 1
+
+    if moved:
+        save_profiles(data)
+        logger.info("Moved %d password(s) into the OS credential store", moved)
+
+    return moved, left
 
 
 # ─── Profile Storage ─────────────────────────────────────────────────────────
@@ -117,9 +250,17 @@ def save_profiles(data: Dict):
 
 
 def get_profile(name: str) -> Optional[Dict]:
-    """Get a single profile by name."""
+    """Get a single profile by name.
+
+    The returned copy carries its own ``name`` so downstream callers (notably
+    ``login``) can look the password up in the OS credential store. The stored
+    JSON is unchanged — this key exists only on the in-memory copy.
+    """
     data = load_profiles()
-    return data["profiles"].get(name)
+    profile = data["profiles"].get(name)
+    if profile is None:
+        return None
+    return {**profile, "name": name}
 
 
 def get_default_profile_name() -> Optional[str]:
@@ -136,15 +277,23 @@ def get_default_profile_name() -> Optional[str]:
 
 
 def add_profile(name: str, username: str, password: str, set_default: bool = False) -> Dict:
-    """Add a new profile."""
+    """Add a new profile.
+
+    The password goes to the OS credential store when one is available; only
+    when it isn't does it stay in profiles.json (see the Credential Storage
+    section above).
+    """
     data = load_profiles()
-    
+
     session_dir = os.path.join(CHROME_SESSIONS_DIR, name)
     os.makedirs(session_dir, exist_ok=True)
-    
+
+    location = set_profile_password(name, password)
+
     data["profiles"][name] = {
         "username": username,
-        "password": password,
+        "password": None if location == LOCATION_KEYRING else password,
+        "password_location": location,
         "session_dir": session_dir,
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "last_used": None
@@ -163,6 +312,7 @@ def remove_profile(name: str):
     """Remove a profile."""
     data = load_profiles()
     if name in data["profiles"]:
+        delete_profile_password(name)
         del data["profiles"][name]
         if data.get("default") == name:
             # Set a new default if available
@@ -528,8 +678,8 @@ def login(driver: webdriver.Chrome, profile: Dict) -> bool:
             return True
         
         username = profile.get('username', '')
-        password = profile.get('password', '')
-        
+        password = get_profile_password(profile)
+
         if not username or not password:
             logger.error("Missing credentials in profile")
             return False
@@ -645,6 +795,10 @@ Examples:
     
     # Migrate
     subparsers.add_parser('migrate', help='Migrate credentials from .env to profile')
+    subparsers.add_parser(
+        'secure-credentials',
+        help='Move passwords out of profiles.json into the OS credential store',
+    )
 
     # Config
     config_parser = subparsers.add_parser('config', help='View or edit a profile config')
@@ -754,6 +908,25 @@ Examples:
         except Exception as e:
             print(f"\n❌ Login failed: {e}")
     
+    elif args.command == 'secure-credentials':
+        if not keyring_available():
+            print(
+                "❌ No OS credential store is available on this machine.\n"
+                "   Passwords will stay in data/profiles/profiles.json.\n"
+                "   On Linux, installing a Secret Service provider "
+                "(e.g. gnome-keyring) enables this."
+            )
+            return EXIT_ERROR
+
+        moved, left = migrate_passwords_to_keyring()
+        if moved:
+            print(f"✅ Moved {moved} password(s) into the OS credential store.")
+            print("   profiles.json no longer contains them.")
+        else:
+            print("Nothing to move — no plain-text passwords found in profiles.json.")
+        if left:
+            print(f"⚠️  {left} password(s) could not be moved and remain in the file.")
+
     elif args.command == 'migrate':
         auto_migrate_from_env()
         data = load_profiles()

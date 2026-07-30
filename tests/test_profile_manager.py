@@ -33,14 +33,14 @@ def test_add_and_get_roundtrip(isolated_store):
     profile = pm.get_profile("work")
     assert profile is not None
     assert profile["username"] == "user@example.com"
-    assert profile["password"] == "plainpass"
+    assert pm.get_profile_password(profile) == "plainpass"
 
 
 def test_special_char_password_roundtrip(isolated_store):
     """ROADMAP validation gate password must survive verbatim."""
     secret = "p@ss+w0rd&more!"
     pm.add_profile("special", "user@example.com", secret)
-    assert pm.get_profile("special")["password"] == secret
+    assert pm.get_profile_password(pm.get_profile("special")) == secret
 
 
 @pytest.mark.parametrize("secret", [
@@ -52,7 +52,7 @@ def test_special_char_password_roundtrip(isolated_store):
 ])
 def test_passwords_preserved_exactly(isolated_store, secret):
     pm.add_profile("p", "user@example.com", secret)
-    assert pm.get_profile("p")["password"] == secret
+    assert pm.get_profile_password(pm.get_profile("p")) == secret
 
 
 def test_cli_add_interactive_preserves_password(isolated_store, monkeypatch, capsys):
@@ -67,7 +67,7 @@ def test_cli_add_interactive_preserves_password(isolated_store, monkeypatch, cap
 
     stored = pm.get_profile("myprofile")
     assert stored is not None
-    assert stored["password"] == secret
+    assert pm.get_profile_password(stored) == secret
 
 
 # ─── Default / remove / list ────────────────────────────────────────────────
@@ -162,7 +162,7 @@ def test_auto_migrate_creates_default(isolated_store, monkeypatch):
     profile = pm.get_profile("default")
     assert profile is not None
     assert profile["username"] == "envuser@example.com"
-    assert profile["password"] == "envp@ss+1!"
+    assert pm.get_profile_password(profile) == "envp@ss+1!"
     assert pm.get_default_profile_name() == "default"
 
 
