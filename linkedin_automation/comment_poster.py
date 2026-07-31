@@ -31,7 +31,31 @@ load_dotenv()
 
 class LinkedInCommentPoster:
     """Post generated comments to LinkedIn posts."""
-    
+
+    # Selectors that prove a post permalink page has actually rendered, tried in
+    # order. Modern (data-testid / role) first, legacy class names kept as
+    # fallbacks for accounts still served the older layout.
+    #
+    # LinkedIn moved the permalink page to data-testid attributes. post_finder
+    # was updated for that; this list was not, so all four legacy selectors
+    # below stopped matching and every post failed with "Post content not found
+    # on page" after burning 4 x 20s of WebDriverWait. Verified against a live
+    # permalink page 2026-07-30: the four legacy selectors returned 0 matches,
+    # the two modern ones returned 1 each.
+    #
+    # Deliberately NOT using "main": it matches on every LinkedIn page,
+    # including error pages, so it would report success on a page that never
+    # loaded the post.
+    POST_DETAIL_SELECTORS = [
+        "span[data-testid='expandable-text-box']",
+        "div[role='listitem']",
+        "div.occludable-update",
+        "div.feed-shared-update-v2",
+        "article.feed-shared-article",
+        "div[data-urn*='activity']",
+    ]
+
+
     def __init__(self, profile_name=None):
         self.profile_name = profile_name
         self.profile = None  # Set during setup_driver
@@ -150,12 +174,7 @@ class LinkedInCommentPoster:
             hb.human_sleep(2.5, 4.0)
 
             # Wait for post content to be visible
-            post_selectors = [
-                "div.occludable-update",
-                "div.feed-shared-update-v2",
-                "article.feed-shared-article",
-                "div[data-urn*='activity']"
-            ]
+            post_selectors = self.POST_DETAIL_SELECTORS
             
             post_found = False
             for selector in post_selectors:
