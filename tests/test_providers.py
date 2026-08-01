@@ -6,6 +6,7 @@ calls. That is the headline gate — one normalised shape out of all of them.
 """
 
 import json
+import os
 
 import pytest
 
@@ -476,7 +477,11 @@ def test_the_cost_ledger_path_is_redirectable(cost_ledger):
     anything. Deleting the conftest fixture makes this fail.
     """
     assert providers.API_USAGE_FILE == str(cost_ledger)
-    assert "tmp" in providers.API_USAGE_FILE or "/private" in providers.API_USAGE_FILE
+    # The property that matters is "not the repo's real ledger". Expressed as
+    # absolute-and-not-the-bare-default rather than by matching a temp
+    # directory name, which is spelled differently on each platform.
+    assert providers.API_USAGE_FILE != "api_usage.jsonl"
+    assert os.path.isabs(providers.API_USAGE_FILE)
 
     providers.log_api_usage("openai", "gpt-4o-mini", "unit-test", 0.0)
     assert cost_ledger.exists()
