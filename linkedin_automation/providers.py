@@ -131,7 +131,11 @@ SPECS = {
     'xai': ProviderSpec(
         name='xai', label='xAI (Grok)',
         base_url='https://api.x.ai/v1', key_env='XAI_API_KEY',
-        default_model='grok-4', default_model_verified=False,
+        # Verified live 2026-08-01 via Test Connection: the model answered,
+        # temperature was accepted, one call, $0.0002. It shipped as a guess in
+        # Phase 8 because the per-phase paid budget is zero and no offline check
+        # can confirm a model identifier.
+        default_model='grok-4', default_model_verified=True,
     ),
     'deepseek': ProviderSpec(
         name='deepseek', label='DeepSeek',

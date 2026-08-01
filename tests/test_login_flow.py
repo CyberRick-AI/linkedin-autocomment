@@ -157,12 +157,28 @@ def test_check_login_unknown_profile(monkeypatch):
 def test_main_no_wait_passes_through(monkeypatch):
     captured = {}
 
-    def fake_check(profile_name=None, wait_for_manual=True):
+    def fake_check(profile_name=None, wait_for_manual=True, timeout=None):
         captured["profile"] = profile_name
         captured["wait"] = wait_for_manual
+        captured["timeout"] = timeout
         return pm.EXIT_OK
 
     monkeypatch.setattr(login_check, "check_login", fake_check)
     code = login_check.main(["--profile", "jeff", "--no-wait"])
     assert code == pm.EXIT_OK
-    assert captured == {"profile": "jeff", "wait": False}
+    assert captured == {"profile": "jeff", "wait": False,
+                        "timeout": login_check.LOGIN_WAIT_TIMEOUT_SECONDS}
+
+
+def test_main_passes_a_custom_timeout_through(monkeypatch):
+    """The wait is bounded, and the bound is configurable, so the poll cannot
+    become a different kind of silent hang."""
+    captured = {}
+
+    def fake_check(profile_name=None, wait_for_manual=True, timeout=None):
+        captured["timeout"] = timeout
+        return pm.EXIT_OK
+
+    monkeypatch.setattr(login_check, "check_login", fake_check)
+    login_check.main(["--profile", "jeff", "--timeout", "42"])
+    assert captured["timeout"] == 42

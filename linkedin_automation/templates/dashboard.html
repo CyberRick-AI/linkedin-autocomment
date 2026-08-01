@@ -439,6 +439,63 @@ header {
   margin-bottom: 1.5rem;
 }
 
+/* ─── Toasts and in-page confirmation ──────────────────────────────────────
+   Replaces alert() and confirm(). Embedded browsers suppress native dialogs
+   and return false to the page, which turned every guard into a silent
+   no-op and made every error message invisible. Observed 2026-08-01: 25
+   consecutive suppressed confirm() calls on Test Connection, with no
+   feedback of any kind. See ROADMAP Phase 5b. */
+
+#toastWrap {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2.5rem));
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim);
+  border-radius: 8px;
+  padding: 0.75rem 2.25rem 0.75rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  animation: modalIn 0.15s ease;
+  position: relative;
+  white-space: pre-wrap;
+}
+
+.toast.error { border-left-color: var(--red); }
+.toast.success { border-left-color: var(--green); }
+.toast.warn { border-left-color: var(--yellow); }
+
+.toast .toast-close {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.toast .toast-close:hover { color: var(--text); }
+
+#confirmModal .modal p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin-bottom: 1.5rem;
+}
+
 .form-group { margin-bottom: 1.25rem; }
 
 .form-group label {
@@ -1481,6 +1538,19 @@ header {
       </div>
     </div>
 
+    <!-- Stored LinkedIn credential for the selected profile -->
+    <div class="poster-section" style="margin-bottom:1rem">
+      <h3>Stored LinkedIn Credential</h3>
+      <div class="trash-reason" style="margin-bottom:1rem">
+        Checks that the password for the selected profile is stored where it
+        should be and can be read back. It does not contact LinkedIn and does
+        not sign in, so it cannot tell you the credential is correct — only
+        logging in can. The password is never shown here.
+      </div>
+      <button class="btn btn-sm" onclick="checkCredential()">Check Stored Credential</button>
+      <div id="credentialResult" style="margin-top:0.75rem"></div>
+    </div>
+
     <!-- Provider for the selected profile -->
     <div class="poster-section" style="margin-bottom:1rem">
       <h3>Generation Provider</h3>
@@ -1531,12 +1601,16 @@ header {
         Keys are stored in your Mac's Keychain, never in a file in this project.
         Once saved, a key can never be read back here: you will only ever see
         its last four characters. To replace one, paste a new key over it.
+        <br><br>
+        The list below is <strong>status only</strong>, not a chooser. A key is
+        saved against whichever provider is picked in the dropdown above, and
+        the field at the bottom names it.
       </div>
 
       <div id="setKeyList"></div>
 
       <div class="form-group" style="margin-top:1.25rem">
-        <label>Paste a key for the selected provider</label>
+        <label id="setApiKeyLabel">Paste a key for the selected provider</label>
         <input type="password" id="setApiKey" placeholder="paste key, then Save Key" autocomplete="off">
       </div>
       <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
@@ -1548,6 +1622,22 @@ header {
 </div>
 
 <!-- ─── Add Profile Modal ─────────────────────────────── -->
+<!-- Toasts and in-page confirmation. See ROADMAP Phase 5b: native dialogs are
+     suppressed in embedded browsers, so alert() showed nothing and confirm()
+     returned false without ever asking. -->
+<div id="toastWrap" aria-live="polite" role="status"></div>
+
+<div class="modal-backdrop" id="confirmModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <h2 id="confirmTitle">Confirm</h2>
+    <p id="confirmMessage"></p>
+    <div class="btn-group" style="justify-content:flex-end">
+      <button class="btn" id="confirmCancel">Cancel</button>
+      <button class="btn btn-primary" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="addProfileModal">
   <div class="modal">
     <h2>Add Profile</h2>
@@ -1898,7 +1988,7 @@ function renderPostPreview() {
 }
 
 async function startScrape() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   await launchJob(
     `/api/posts/${currentProfile}/scrape`,
@@ -2041,7 +2131,7 @@ function toggleCommentLimit() {
 }
 
 async function startGenerate() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   const noLimit = document.getElementById('commentNoLimit').checked;
   const body = {
@@ -2151,7 +2241,7 @@ async function saveComments() {
 // ─── Posting ────────────────────────────────────────────
 
 async function startPosting() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   const body = { count: parseInt(document.getElementById('postCountInput').value) };
   if (savedCommentsFile) body.comments_file = savedCommentsFile;
@@ -2327,7 +2417,7 @@ async function addProfile() {
   const username = document.getElementById('newProfileEmail').value.trim();
   const password = document.getElementById('newProfilePass').value.trim();
   
-  if (!name || !username || !password) return alert('All fields required');
+  if (!name || !username || !password) return showToast('All fields required', 'error');
   
   const res = await fetch('/api/profiles', {
     method: 'POST',
@@ -2336,7 +2426,7 @@ async function addProfile() {
   });
   
   const data = await res.json();
-  if (data.error) return alert(data.error);
+  if (data.error) return showToast(data.error, 'error');
   
   closeModal();
   await loadProfiles();
@@ -2362,17 +2452,17 @@ function populateConfigForm(config) {
 }
 
 async function openConfigModal() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
   document.getElementById('configProfileName').textContent = currentProfile;
   document.getElementById('configMsg').style.display = 'none';
   try {
     const res = await fetch(`/api/profiles/${currentProfile}/config`);
     const data = await res.json();
-    if (data.error) return alert(data.error);
+    if (data.error) return showToast(data.error, 'error');
     populateConfigForm(data.config || data);
     document.getElementById('configModal').classList.add('active');
   } catch(e) {
-    alert('Could not load config: ' + e.message);
+    showToast('Could not load config: ' + e.message, 'error');
   }
 }
 
@@ -2410,13 +2500,13 @@ async function saveConfig() {
       body: JSON.stringify(partial)
     });
     const data = await res.json();
-    if (data.error) return alert(data.error);
+    if (data.error) return showToast(data.error, 'error');
     const msg = document.getElementById('configMsg');
     msg.textContent = '✓ Config saved';
     msg.style.display = 'block';
     setTimeout(closeConfigModal, 800);
   } catch(e) {
-    alert('Save failed: ' + e.message);
+    showToast('Save failed: ' + e.message, 'error');
   }
 }
 
@@ -2428,33 +2518,33 @@ async function resetConfig() {
       headers: { 'Content-Type': 'application/json' }
     });
     const data = await res.json();
-    if (data.error) return alert(data.error);
+    if (data.error) return showToast(data.error, 'error');
     populateConfigForm(data.config || data);
     const msg = document.getElementById('configMsg');
     msg.textContent = '✓ Reset to defaults';
     msg.style.display = 'block';
   } catch(e) {
-    alert('Reset failed: ' + e.message);
+    showToast('Reset failed: ' + e.message, 'error');
   }
 }
 
 // ─── Set Default Profile ────────────────────────────────
 
 async function setDefaultProfile() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
   try {
     const res = await fetch(`/api/profiles/${currentProfile}/default`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
     const data = await res.json();
-    if (data.error) return alert(data.error);
+    if (data.error) return showToast(data.error, 'error');
     const sel = document.getElementById('profileSelect');
     const keep = sel.value;
     await loadProfiles();
     if (keep) { sel.value = keep; switchProfile(); }
   } catch(e) {
-    alert('Could not set default: ' + e.message);
+    showToast('Could not set default: ' + e.message, 'error');
   }
 }
 
@@ -2462,13 +2552,13 @@ async function setDefaultProfile() {
 
 async function checkSelectors(page) {
   page = page || 'feed';
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   const body = { page };
   if (page === 'post' || page === 'search') {
     const field = page === 'post' ? 'healthPostUrl' : 'healthSearchUrl';
     const url = (document.getElementById(field).value || '').trim();
-    if (!url) return alert(`Enter a ${page === 'post' ? 'post permalink' : 'people-search'} URL first`);
+    if (!url) return showToast(`Enter a ${page === 'post' ? 'post permalink' : 'people-search'} URL first`, 'error');
     body.url = url;
   }
 
@@ -2490,12 +2580,12 @@ async function checkSelectors(page) {
     });
     if (res.status === 409) {
       const err = await res.json();
-      alert(err.error || 'A task is already running for this profile');
+      showToast(err.error || 'A task is already running for this profile', 'error');
       return finish();
     }
     if (!res.ok) {
       const err = await res.json();
-      alert(err.error || 'The health check was rejected');
+      showToast(err.error || 'The health check was rejected', 'error');
       return finish();
     }
     const { job_id } = await res.json();
@@ -2582,7 +2672,7 @@ const OVERALL_NOTES = {
 };
 
 async function loadSelectorReport() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
   const wrap = document.getElementById('selectorHealth');
   try {
     const res = await fetch(`/api/health/${currentProfile}/report`);
@@ -2633,6 +2723,100 @@ function renderSelectorReport(report) {
   out.push(`<div style="margin-top:0.5rem;font-size:0.72rem;color:var(--text-dim)">
       * critical. A red on a critical selector means that path fails with no error.</div>`);
   document.getElementById('selectorRows').innerHTML = out.join('');
+}
+
+// ─── Stored credential self-check ───────────────────────
+
+async function checkCredential() {
+  if (!currentProfile) return showToast('Select a profile first', 'error');
+  const out = document.getElementById('credentialResult');
+  out.innerHTML = '<span class="trash-reason">Checking…</span>';
+  try {
+    const res = await fetch(`/api/profiles/${currentProfile}/credential-check`);
+    const d = await res.json();
+    if (!res.ok) { out.innerHTML = `<span style="color:var(--red)">${esc(d.error)}</span>`; return; }
+
+    const dot = (ok) => `<span style="color:${ok ? 'var(--green)' : 'var(--red)'}">&#9679;</span>`;
+    const rows = [
+      `<div style="font-family:var(--mono);font-size:0.78rem;line-height:1.7">`,
+      `${dot(true)} username &nbsp; ${esc(d.username || '(none recorded)')}`,
+      `<br>${dot(d.in_keychain)} stored in &nbsp; ${esc(d.stored_in)}` +
+        (d.in_keychain ? '' : ' — not the Keychain'),
+      `<br>${dot(!d.plaintext_in_file)} plaintext in profiles.json &nbsp; ${d.plaintext_in_file ? 'YES' : 'no'}`,
+      `<br>${dot(d.roundtrip_ok)} can be read back &nbsp; ${d.roundtrip_ok ? 'yes' : 'NO'}`,
+      d.detail ? `<br><span style="color:var(--yellow)">${esc(d.detail)}</span>` : '',
+      `</div>`,
+    ];
+    // State the limit as prominently as the result. A check that lists what it
+    // verified and stays quiet about what it did not is how a partial answer
+    // gets read as a whole one.
+    rows.push(`<div class="trash-reason" style="margin-top:0.6rem">Not checked: ` +
+              `${esc((d.not_checked || []).join(' '))}</div>`);
+    out.innerHTML = rows.join('');
+  } catch (e) {
+    out.innerHTML = `<span style="color:var(--red)">Check failed: ${esc(e.message)}</span>`;
+  }
+}
+
+// ─── Messages and confirmation ──────────────────────────
+//
+// alert() and confirm() are not available here, and the failure is silent
+// rather than loud: an embedded browser suppresses the dialog, hands the page
+// `false`, and the guard returns as though the user had clicked Cancel.
+// Observed 2026-08-01 on Test Connection, 25 clicks, no output of any kind.
+//
+// A guard that cannot ask must not proceed, and a message that cannot be shown
+// is the same as no message. So both are rendered in the page itself.
+
+function showToast(message, kind) {
+  const wrap = document.getElementById('toastWrap');
+  if (!wrap) return;                       // never let a message break a flow
+  const toast = document.createElement('div');
+  toast.className = 'toast' + (kind ? ' ' + kind : '');
+  toast.textContent = String(message);
+
+  const close = document.createElement('button');
+  close.className = 'toast-close';
+  close.textContent = '×';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.onclick = () => toast.remove();
+  toast.appendChild(close);
+
+  wrap.appendChild(toast);
+  // Long enough to read a sentence, and dismissible before that. Errors linger.
+  setTimeout(() => toast.remove(), kind === 'error' ? 12000 : 7000);
+}
+
+// Returns a Promise that resolves true only on an explicit Confirm. Every
+// other exit — Cancel, Escape, backdrop click — resolves false, so a guard
+// still guards when the user does not answer.
+function askConfirm(message, confirmLabel) {
+  const backdrop = document.getElementById('confirmModal');
+  const okBtn = document.getElementById('confirmOk');
+  const cancelBtn = document.getElementById('confirmCancel');
+  document.getElementById('confirmMessage').textContent = String(message);
+  okBtn.textContent = confirmLabel || 'Confirm';
+  backdrop.classList.add('active');
+  okBtn.focus();
+
+  return new Promise(resolve => {
+    const settle = (answer) => {
+      backdrop.classList.remove('active');
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      backdrop.onclick = null;
+      document.removeEventListener('keydown', onKey);
+      resolve(answer);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') settle(false);
+      if (e.key === 'Enter') settle(true);
+    };
+    okBtn.onclick = () => settle(true);
+    cancelBtn.onclick = () => settle(false);
+    backdrop.onclick = (e) => { if (e.target === backdrop) settle(false); };
+    document.addEventListener('keydown', onKey);
+  });
 }
 
 // ─── Helpers ────────────────────────────────────────────
@@ -2758,10 +2942,24 @@ function onProviderPicked() {
   }
   document.getElementById('setModelHint').textContent = hint;
   document.getElementById('setProbeReport').innerHTML = '';
+
+  // Name the provider the key will be saved against, rather than saying "the
+  // selected provider" and pointing at nothing. The status rows above read as
+  // selectable and are not, so a key pasted while this dropdown still said
+  // OpenAI would be stored as the OpenAI key. Observed 2026-08-01.
+  const keyLabel = document.getElementById('setApiKeyLabel');
+  if (keyLabel) keyLabel.textContent = `Paste a key for ${(p && p.label) || name}`;
+  const keyField = document.getElementById('setApiKey');
+  if (keyField) {
+    keyField.placeholder = (p && p.local)
+      ? 'no key needed — this provider runs locally'
+      : `paste the ${(p && p.label) || name} key, then Save Key`;
+    keyField.disabled = !!(p && p.local);
+  }
 }
 
 async function saveProvider() {
-  if (!currentProfile) { alert('Pick a profile first'); return; }
+  if (!currentProfile) { showToast('Pick a profile first', 'error'); return; }
   const body = {
     provider: document.getElementById('setProvider').value,
     model: document.getElementById('setModel').value.trim(),
@@ -2781,7 +2979,7 @@ async function saveProvider() {
 async function saveApiKey() {
   const field = document.getElementById('setApiKey');
   const provider = document.getElementById('setProvider').value;
-  if (!field.value.trim()) { alert('Paste a key first'); return; }
+  if (!field.value.trim()) { showToast('Paste a key first', 'error'); return; }
 
   const resp = await fetch('/api/settings/api-key', {
     method: 'POST',
@@ -2799,7 +2997,7 @@ async function saveApiKey() {
 async function testConnection() {
   const provider = document.getElementById('setProvider').value;
   const report = document.getElementById('setProbeReport');
-  if (!confirm(
+  if (!await askConfirm(
       `Send one small test prompt to ${provider}?\n\n` +
       'This makes a real API call and costs a fraction of a cent.')) return;
 
@@ -2834,7 +3032,7 @@ async function testConnection() {
 }
 
 async function clearApiKey(provider) {
-  if (!confirm(`Forget the stored ${provider} API key?`)) return;
+  if (!await askConfirm(`Forget the stored ${provider} API key?`)) return;
   await fetch(`/api/settings/api-key/${provider}`, {method: 'DELETE'});
   document.getElementById('setKeyStatus').textContent = `Cleared ${provider}`;
   loadSettings();
@@ -2969,7 +3167,7 @@ async function schedRunNow(job) {
     });
     const data = await res.json();
     const r = data.result || {};
-    alert(`Ran ${job}: ${r.action}${r.count ? ' (' + r.count + ')' : ''}${r.note ? ' — ' + r.note : ''}`);
+    showToast(`Ran ${job}: ${r.action}${r.count ? ' (' + r.count + ')' : ''}${r.note ? ' — ' + r.note : ''}`, 'success');
     loadScheduler();
   } catch (e) {
     console.error('Scheduler run-now error:', e);
@@ -3027,11 +3225,11 @@ async function loadConnectorHistory() {
 }
 
 async function startConnector() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   const url = document.getElementById('connectorUrl').value.trim();
-  if (!url) return alert('Enter a LinkedIn search URL');
-  if (!url.includes('linkedin.com')) return alert('Please enter a valid LinkedIn URL');
+  if (!url) return showToast('Enter a LinkedIn search URL', 'error');
+  if (!url.includes('linkedin.com')) return showToast('Please enter a valid LinkedIn URL', 'error');
 
   await launchJob(
     `/api/connector/${currentProfile}/start`,
@@ -3058,10 +3256,10 @@ async function stopConnector() {
       headers: { 'Content-Type': 'application/json' }
     });
     const data = await res.json();
-    if (data.error) alert(data.error);
+    if (data.error) showToast(data.error, 'error');
     refreshActiveJobs();
   } catch(e) {
-    alert('Stop failed: ' + e.message);
+    showToast('Stop failed: ' + e.message, 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Stop'; }
   }
@@ -3142,7 +3340,7 @@ async function loadPosterQueue() {
 }
 
 async function generatePosts() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   await launchJob(
     `/api/poster/${currentProfile}/generate`,
@@ -3160,10 +3358,10 @@ async function generatePosts() {
 }
 
 async function generateArticlePost() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
 
   const url = document.getElementById('articleUrl').value.trim();
-  if (!url) return alert('Enter an article URL');
+  if (!url) return showToast('Enter an article URL', 'error');
 
   await launchJob(
     `/api/poster/${currentProfile}/article`,
@@ -3176,12 +3374,12 @@ async function generateArticlePost() {
 }
 
 async function publishNext() {
-  if (!currentProfile) return alert('Select a profile first');
+  if (!currentProfile) return showToast('Select a profile first', 'error');
   await doPublish(null);
 }
 
 async function publishById(id) {
-  if (!confirm(`Publish post #${id} to LinkedIn?`)) return;
+  if (!await askConfirm(`Publish post #${id} to LinkedIn?`)) return;
   await doPublish(id);
 }
 
@@ -3199,13 +3397,13 @@ async function doPublish(postId) {
 }
 
 async function removePost(id) {
-  if (!confirm(`Remove post #${id} from queue?`)) return;
+  if (!await askConfirm(`Remove post #${id} from queue?`)) return;
 
   try {
     await fetch(`/api/poster/${currentProfile}/queue/${id}`, { method: 'DELETE' });
     loadPosterQueue();
   } catch(e) {
-    alert('Failed to remove post');
+    showToast('Failed to remove post', 'error');
   }
 }
 

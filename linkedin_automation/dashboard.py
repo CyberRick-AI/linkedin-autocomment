@@ -1158,6 +1158,59 @@ def selector_health(profile_name):
     return jsonify({"job_id": job_id})
 
 
+@app.route('/api/profiles/<name>/credential-check', methods=['GET'])
+def credential_check(name):
+    """GET /api/profiles/<name>/credential-check — is the stored password sound?
+
+    Answers three things with **zero LinkedIn contact**: where the password is
+    stored, whether it can actually be read back, and which username it belongs
+    to. Never returns the password, and never returns any part of it.
+
+    It deliberately does NOT answer whether the credential is correct on
+    LinkedIn, and says so. Only an authentication attempt can answer that, and
+    that is the automated-login path the audit calls the highest-risk code in
+    the project: LinkedIn flags automated logins hardest, which is the whole
+    reason the persistent-session design exists. A check that quietly implied it
+    had verified the credential would be the same lie as a selector report that
+    passes a path it never looked at.
+    """
+    profiles = pm.load_profiles().get("profiles", {})
+    profile = profiles.get(name)
+    if profile is None:
+        return jsonify({"error": f"No profile named '{name}'"}), 404
+
+    stored_in = profile.get("password_location") or "file"
+    roundtrip_ok, detail = False, ""
+    try:
+        secret = pm.get_profile_password(profile, name)
+        roundtrip_ok = bool(secret)
+        if not roundtrip_ok:
+            detail = ("Nothing came back. The entry is missing or empty, so an "
+                      "automatic re-login would have no password to use.")
+    except Exception as e:
+        detail = f"Could not read it back ({type(e).__name__})."
+
+    return jsonify({
+        "profile": name,
+        "username": profile.get("username"),
+        "stored_in": stored_in,
+        "in_keychain": stored_in == pm.LOCATION_KEYRING,
+        "plaintext_in_file": profile.get("password") is not None,
+        "roundtrip_ok": roundtrip_ok,
+        "detail": detail,
+        "checked": [
+            "the username recorded for this profile",
+            "where the password is stored",
+            "that the password can be read back",
+        ],
+        "not_checked": [
+            "whether these credentials are correct on LinkedIn. Only signing in "
+            "can tell you that, and this tool will not sign in to test a "
+            "password. You find out when you log in yourself.",
+        ],
+    })
+
+
 @app.route('/api/health/<profile_name>/report', methods=['GET'])
 def selector_health_report(profile_name):
     """GET /api/health/<name>/report — the whole registry, both paths, at a glance.

@@ -161,13 +161,33 @@ def test_defaults_are_unchanged_from_phase_8():
 
 
 def test_unverified_default_models_are_flagged_not_presented_as_checked():
-    """The xAI lesson: a guessed model string is labelled as one."""
+    """The xAI lesson: a guessed model string is labelled as one.
+
+    Deliberately does not pin any single provider to unverified. xAI was the
+    original example and was confirmed live on 2026-08-01, so pinning it would
+    have made this test a record of one afternoon rather than of the rule. What
+    matters is that the flag still separates the two states.
+    """
     assert providers.SPECS["openai"].default_model_verified is True
     assert providers.SPECS["anthropic"].default_model_verified is True
-    assert providers.SPECS["xai"].default_model_verified is False
-    for spec in providers.SPECS.values():
-        if spec.default_model and not spec.default_model_verified:
-            assert spec.default_model  # flagged, and the UI surfaces the flag
+
+    with_default = [s for s in providers.SPECS.values() if s.default_model]
+    verified = [s for s in with_default if s.default_model_verified]
+    unverified = [s for s in with_default if not s.default_model_verified]
+
+    assert verified, "nothing is verified; the flag carries no information"
+    assert unverified, ("everything is verified; the UI's 'unverified, confirm "
+                        "it with Test Connection' warning is now dead")
+
+
+def test_a_verified_default_was_actually_confirmed_against_the_vendor():
+    """Verified means somebody made a real call, not that it looked right.
+
+    grok-4 shipped as a guess in Phase 8 because the per-phase paid budget is
+    zero. It became verified only after Test Connection answered on 2026-08-01.
+    """
+    assert providers.SPECS["xai"].default_model == "grok-4"
+    assert providers.SPECS["xai"].default_model_verified is True
 
 
 def test_anthropic_default_is_not_opus():

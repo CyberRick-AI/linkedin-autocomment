@@ -59,10 +59,19 @@ def test_local_providers_are_not_asked_for_a_key(api_client):
 
 
 def test_unverified_default_models_are_flagged_to_the_ui(api_client):
+    """The flag has to reach the screen, and it has to still mean something.
+
+    Asserted by state rather than by provider name: xAI was the original
+    unverified example and was confirmed live on 2026-08-01.
+    """
     body = api_client.get("/api/settings/providers").get_json()
     by_name = {p["name"]: p for p in body["providers"]}
     assert by_name["openai"]["default_model_verified"] is True
-    assert by_name["xai"]["default_model_verified"] is False
+    assert by_name["xai"]["default_model_verified"] is True
+
+    with_default = [p for p in body["providers"] if p["default_model"]]
+    assert any(not p["default_model_verified"] for p in with_default), (
+        "no provider is unverified any more, so the UI warning is dead")
 
 
 def test_providers_endpoint_reports_key_status_without_the_key(api_client):
