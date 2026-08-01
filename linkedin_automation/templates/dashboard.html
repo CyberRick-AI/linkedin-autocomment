@@ -1185,12 +1185,8 @@ header {
     <div class="settings-row">
       <div class="form-group">
         <label>Model</label>
-        <select id="commentModel">
-          <option value="gpt-4o-mini">gpt-4o-mini (fast/cheap)</option>
-          <option value="gpt-4o">gpt-4o</option>
-          <option value="gpt-4">gpt-4</option>
-          <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-        </select>
+<div class="trash-reason" id="commentModelInfo">Loading…</div>
+          <div class="trash-reason" style="margin-top:0.4rem">Set in <strong>Settings</strong>. The model follows the provider you chose there.</div>
       </div>
       <div class="form-group">
         <label>Max Comments</label>
@@ -1377,10 +1373,8 @@ header {
           </div>
           <div class="form-group">
             <label>Model</label>
-            <select id="posterModel">
-              <option value="gpt-4o" selected>gpt-4o</option>
-              <option value="gpt-4o-mini">gpt-4o-mini</option>
-            </select>
+<div class="trash-reason" id="posterModelInfo">Loading…</div>
+          <div class="trash-reason" style="margin-top:0.4rem">Set in <strong>Settings</strong>. The model follows the provider you chose there.</div>
           </div>
         </div>
         <button class="btn btn-primary" id="generatePostBtn" onclick="generatePosts()">
@@ -1397,10 +1391,8 @@ header {
         </div>
         <div class="form-group" style="margin-bottom:0.75rem">
           <label>Model</label>
-          <select id="articleModel">
-            <option value="gpt-4o" selected>gpt-4o</option>
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-          </select>
+<div class="trash-reason" id="articleModelInfo">Loading…</div>
+          <div class="trash-reason" style="margin-top:0.4rem">Set in <strong>Settings</strong>. The model follows the provider you chose there.</div>
         </div>
         <button class="btn btn-primary" id="articleBtn" onclick="generateArticlePost()">
           Generate from Article
@@ -1764,6 +1756,7 @@ function switchProfile() {
   loadExistingPosts();
   loadExistingComments();
   loadLifecycle();
+  refreshActiveModels();
 }
 
 async function loadExistingPosts() {
@@ -2141,7 +2134,6 @@ async function startGenerate() {
 
   const noLimit = document.getElementById('commentNoLimit').checked;
   const body = {
-    model: document.getElementById('commentModel').value,
     limit: noLimit ? null : parseInt(document.getElementById('commentLimit').value)
   };
   if (savedPostsFile) body.input_file = savedPostsFile;
@@ -2731,6 +2723,37 @@ function renderSelectorReport(report) {
   document.getElementById('selectorRows').innerHTML = out.join('');
 }
 
+// ─── Which provider and model will actually run ─────────
+//
+// The Generate panels used to carry their own model dropdown, listing OpenAI
+// models only. It won: the dashboard always sent a model, and the generator
+// treats an explicit --model as an override of the profile config. So a
+// profile configured for xAI would call xAI's endpoint asking for
+// gpt-4o-mini, and fail with a vendor error that looked like xAI being
+// broken. There is now one place to choose a provider, and these panels
+// report what that choice is rather than competing with it.
+
+async function renderActiveModel(elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (!currentProfile) { el.textContent = 'Select a profile first.'; return; }
+  try {
+    const p = await (await fetch(`/api/profiles/${currentProfile}/provider`)).json();
+    const keySet = p.local || (p.key && p.key.set);
+    el.innerHTML =
+      `Using <strong>${esc(p.label || p.provider)}</strong> · <code>${esc(p.model || '(provider default)')}</code>` +
+      (keySet ? '' :
+        ` <span style="color:var(--red)">— no API key set for ${esc(p.provider)}, ` +
+        `generation will fail</span>`);
+  } catch (e) {
+    el.textContent = 'Could not read the provider setting: ' + e.message;
+  }
+}
+
+function refreshActiveModels() {
+  ['commentModelInfo', 'posterModelInfo', 'articleModelInfo'].forEach(renderActiveModel);
+}
+
 // ─── Sign in to LinkedIn ────────────────────────────────
 //
 // The one step that had no button, and so the one step that still needed a
@@ -2932,6 +2955,8 @@ function switchMode(mode) {
     p.classList.toggle('active', p.id === 'mode-' + mode);
   });
 
+  refreshActiveModels();
+
   if (mode === 'connector') {
     loadConnectorStats();
     loadConnectorHistory();
@@ -2954,15 +2979,32 @@ function switchMode(mode) {
 
 let SETTINGS_PROVIDERS = [];
 
-async function loadSettings() {
-  const catalogue = await fetch('/api/settings/providers').then(r => r.json());
-  SETTINGS_PROVIDERS = catalogue.providers || [];
+// Rendered on its own so it can follow the dropdown. Called at load AND from
+// onProviderPicked: at load the dropdown still holds the first option, not the
+// profile's provider, so a list keyed on "selected" showed the wrong row. Same
+// ordering trap Phase 8 hit with the model hint.
+function renderKeyList() {
+  // Only the providers that are actually configured, plus whichever one is
+  // selected. Eleven rows, ten of them reading "not set", spent a lot of screen
+  // to convey two facts and read as a chooser — which it is not; the dropdown
+  // above is the chooser. The rest are one click away.
+  const selected = document.getElementById('setProvider').value;
+  const isConfigured = (p) => p.local || (p.key && p.key.set);
+  const shown = SETTINGS_PROVIDERS.filter(p => isConfigured(p) || p.name === selected);
+  const hidden = SETTINGS_PROVIDERS.filter(p => !shown.includes(p));
 
-  const select = document.getElementById('setProvider');
-  select.innerHTML = SETTINGS_PROVIDERS
-    .map(p => `<option value="${p.name}">${p.label}</option>`).join('');
+  document.getElementById('setKeyList').innerHTML =
+    shown.map(keyRow).join('') +
+    (hidden.length ? `
+      <details style="margin-top:0.6rem">
+        <summary style="cursor:pointer;font-family:var(--mono);font-size:0.75rem;
+                        color:var(--text-dim)">
+          ${hidden.length} other provider${hidden.length === 1 ? '' : 's'} with no key
+        </summary>
+        <div style="margin-top:0.4rem">${hidden.map(keyRow).join('')}</div>
+      </details>` : '');
 
-  document.getElementById('setKeyList').innerHTML = SETTINGS_PROVIDERS.map(p => {
+  function keyRow(p) {
     const k = p.key || {};
     let label;
     if (p.local) {
@@ -2974,12 +3016,26 @@ async function loadSettings() {
     }
     const clear = k.set && k.source === 'keyring'
       ? `<button class="btn" onclick="clearApiKey('${p.name}')">Forget</button>` : '';
+    const mark = p.name === selected
+      ? ' <span class="trash-reason">← selected</span>' : '';
     return `<div style="display:flex;justify-content:space-between;align-items:center;
                         padding:0.5rem 0;border-bottom:1px solid var(--border)">
-              <div><strong>${p.label}</strong><div class="trash-reason">${label}</div></div>
+              <div><strong>${p.label}</strong>${mark}<div class="trash-reason">${label}</div></div>
               <div>${clear}</div>
             </div>`;
-  }).join('');
+  }
+
+}
+
+async function loadSettings() {
+  const catalogue = await fetch('/api/settings/providers').then(r => r.json());
+  SETTINGS_PROVIDERS = catalogue.providers || [];
+
+  const select = document.getElementById('setProvider');
+  select.innerHTML = SETTINGS_PROVIDERS
+    .map(p => `<option value="${p.name}">${p.label}</option>`).join('');
+
+  renderKeyList();
 
   if (!catalogue.credential_store_available) {
     document.getElementById('setKeyStatus').textContent =
@@ -3030,6 +3086,10 @@ function onProviderPicked() {
   // OpenAI would be stored as the OpenAI key. Observed 2026-08-01.
   const keyLabel = document.getElementById('setApiKeyLabel');
   if (keyLabel) keyLabel.textContent = `Paste a key for ${(p && p.label) || name}`;
+  // The visible key rows follow the selection too, so the list always shows the
+  // provider you are about to save a key against.
+  if (SETTINGS_PROVIDERS.length) renderKeyList();
+
   const keyField = document.getElementById('setApiKey');
   if (keyField) {
     keyField.placeholder = (p && p.local)
@@ -3429,7 +3489,6 @@ async function generatePosts() {
       count: parseInt(document.getElementById('posterCount').value) || 1,
       style: document.getElementById('posterStyle').value || null,
       topic: document.getElementById('posterTopic').value.trim() || null,
-      model: document.getElementById('posterModel').value
     },
     document.getElementById('generatePostBtn'),
     'Generate Posts',
@@ -3446,7 +3505,7 @@ async function generateArticlePost() {
 
   await launchJob(
     `/api/poster/${currentProfile}/article`,
-    { url, model: document.getElementById('articleModel').value },
+    { url },
     document.getElementById('articleBtn'),
     'Generate from Article',
     document.getElementById('posterLog'),

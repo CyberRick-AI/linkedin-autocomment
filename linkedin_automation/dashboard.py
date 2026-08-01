@@ -541,10 +541,15 @@ def get_profile_provider_route(name):
         # base URL, or a provider with no model. Report it rather than papering
         # over it with a default, so the user can see what to fix.
         return jsonify({"error": str(e)}), 400
+    spec = providers.get_spec(provider)
     return jsonify({
         "provider": provider,
+        "label": spec.label,
         "model": model,
         "base_url": base_url or "",
+        # A local provider needs no key, so a "no key set" warning against
+        # Ollama would be wrong rather than merely noisy.
+        "local": bool(spec.local),
         "key": pm.api_key_status(provider),
     })
 
@@ -957,7 +962,11 @@ def generate_comments(profile_name):
     """
     body = request.json or {}
     input_file = body.get('input_file', '')
-    model = body.get('model', 'gpt-4o-mini')
+    # No OpenAI default. Defaulting here overrode the provider model the
+    # operator picked in Settings, so a profile configured for xAI would
+    # call xAI's endpoint asking for gpt-4o-mini. None means "use the
+    # profile's configured model", which is what Settings is for.
+    model = body.get('model') or None
     # Optional cap. None/blank/<=0 means "generate for all engaging posts" — there
     # is no rate-limit reason to cap (it's OpenAI-only). A positive int is a ceiling.
     limit = body.get('limit')
@@ -996,9 +1005,13 @@ def generate_comments(profile_name):
         cmd = [
             sys.executable, "-m", "linkedin_automation.comment_generator",
             infile,
-            "--model", mdl,
             "--profile", pname,
         ]
+        # Only pass --model when the caller genuinely overrode it. Passing None
+        # would crash the subprocess build; passing a default would silently
+        # override the provider model chosen in Settings.
+        if mdl:
+            cmd += ["--model", mdl]
         # Only pass --limit when the user set a cap; omitting it means no limit.
         if lmt is not None:
             cmd.extend(["--limit", str(lmt)])
@@ -1413,7 +1426,11 @@ def poster_generate(profile_name):
     count = body.get('count', 1)
     style = body.get('style', None)
     topic = body.get('topic', None)
-    model = body.get('model', 'gpt-4o-mini')
+    # No OpenAI default. Defaulting here overrode the provider model the
+    # operator picked in Settings, so a profile configured for xAI would
+    # call xAI's endpoint asking for gpt-4o-mini. None means "use the
+    # profile's configured model", which is what Settings is for.
+    model = body.get('model') or None
 
     job_id = f"postgen_{profile_name}_{int(time.time())}"
 
@@ -1443,7 +1460,11 @@ def poster_article(profile_name):
     """Generate a post from an article URL."""
     body = request.json or {}
     url = body.get('url', '')
-    model = body.get('model', 'gpt-4o-mini')
+    # No OpenAI default. Defaulting here overrode the provider model the
+    # operator picked in Settings, so a profile configured for xAI would
+    # call xAI's endpoint asking for gpt-4o-mini. None means "use the
+    # profile's configured model", which is what Settings is for.
+    model = body.get('model') or None
 
     if not url:
         return jsonify({"error": "url is required"}), 400
