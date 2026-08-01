@@ -4,7 +4,8 @@
 Serves the single-page UI and the JSON API that drives the scrape → generate →
 review → post pipeline. Long-running browser/AI tasks run as background jobs
 (see ``run_job`` / ``run_subprocess``); profile management is delegated to
-``linkedin_profile_manager``. Runs on port 6500.
+``linkedin_profile_manager``. Binds loopback only, on port 6500 by default
+(see ``LINKEDIN_DASHBOARD_PORT``).
 """
 
 import os
@@ -17,6 +18,7 @@ import glob
 import logging
 from datetime import datetime
 from flask import Flask, request, jsonify, send_file
+from werkzeug.exceptions import HTTPException
 from dotenv import load_dotenv
 
 from .comment_fields import normalize_comment_fields, comments_to_txt
@@ -34,6 +36,80 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
+
+# ─── Server Configuration ─────────────────────────────────────────────────────
+
+DEFAULT_PORT = 6500
+
+# The bind address is deliberately a constant, not an environment variable.
+# Every endpoint here is unauthenticated, and several of them drive a
+# logged-in LinkedIn session. Loopback is the only thing standing between that
+# API and the rest of the network, so exposing it has to be a code change that
+# someone reviews, not a variable someone exports. Dashboard authentication is
+# the prerequisite for ever binding wider, and it does not exist yet.
+HOST = '127.0.0.1'
+
+_TRUTHY = {'1', 'true', 'yes', 'on'}
+
+
+def get_port():
+    """Return the port to serve on: ``LINKEDIN_DASHBOARD_PORT``, else 6500.
+
+    A value that is not a number, or is outside 1-65535, falls back to the
+    default with a warning instead of raising. A dashboard on the wrong port
+    is a recoverable annoyance; a launcher that dies on a typo is not.
+    """
+    raw = os.environ.get('LINKEDIN_DASHBOARD_PORT', '').strip()
+    if not raw:
+        return DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        logger.warning(
+            "LINKEDIN_DASHBOARD_PORT=%r is not a number; falling back to %d",
+            raw, DEFAULT_PORT)
+        return DEFAULT_PORT
+    if not 1 <= port <= 65535:
+        logger.warning(
+            "LINKEDIN_DASHBOARD_PORT=%r is outside 1-65535; falling back to %d",
+            raw, DEFAULT_PORT)
+        return DEFAULT_PORT
+    return port
+
+
+def get_debug():
+    """Return whether Flask debug mode is on. Off unless explicitly opted in.
+
+    Debug mode ships the Werkzeug interactive debugger, which runs arbitrary
+    Python typed into the browser. That is by design and it is not a bug in
+    Werkzeug, but it means debug mode is a remote code execution surface the
+    moment the bind address is anything but loopback. Opt in per run with
+    ``LINKEDIN_DASHBOARD_DEBUG=1``; never leave it set.
+    """
+    return os.environ.get('LINKEDIN_DASHBOARD_DEBUG', '').strip().lower() in _TRUTHY
+
+
+# ─── Error Handling ───────────────────────────────────────────────────────────
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(e):
+    """Render 4xx/5xx raised as HTTP exceptions as JSON, matching the API."""
+    return jsonify({'error': e.name, 'status': e.code}), e.code
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_exception(e):
+    """Turn any unhandled exception into a generic 500 carrying no detail.
+
+    The traceback goes to the server log, where the operator can read it. The
+    response body gets the status and nothing else: no traceback, no source
+    excerpt, no local variables. Locals are the point. A failure inside the
+    login or provider paths has credentials in scope, and an error page that
+    renders them has handed them to whoever triggered the error.
+    """
+    logger.exception("Unhandled error serving %s %s", request.method, request.path)
+    return jsonify({'error': 'Internal Server Error', 'status': 500}), 500
+
 
 # ─── Subprocess Environment (fix Windows cp1252 encoding) ─────────────────────
 
@@ -1199,14 +1275,28 @@ def index():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
+def main():
+    """Boot the dashboard: loopback bind, debugger off unless opted in."""
     pm.auto_migrate_from_env()
+    port = get_port()
+    debug = get_debug()
     print("\n" + "=" * 50)
     print("  LinkedIn Automation Dashboard")
-    print("  http://localhost:6500")
+    print(f"  http://localhost:{port}")
+    if debug:
+        print("")
+        print("  DEBUG MODE IS ON. The Werkzeug debugger is live, and it")
+        print("  executes Python typed into the browser. Local use only.")
     print("=" * 50 + "\n")
-    # Start the background scheduler. use_reloader is left on (Flask debug), so
-    # only start in the reloader's child process to avoid two scheduler threads.
-    if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    # Debug mode runs the reloader, which forks a child that re-imports this
+    # module. Start the scheduler only in the process that will actually serve,
+    # or two scheduler threads race over the same jobs. The previous guard read
+    # app.debug, which is False until app.run() sets it, so it was true in both
+    # processes and started the scheduler twice. Read the computed value.
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         scheduler_engine.start()
-    app.run(debug=True, port=6500)
+    app.run(host=HOST, port=port, debug=debug)
+
+
+if __name__ == '__main__':
+    main()

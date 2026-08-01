@@ -380,9 +380,36 @@ uv run python tools/connector_dump.py "<people-search-url>" --profile <name>   #
 
 - Chrome must be installed (Selenium uses your real Chrome)
 - First run per profile will require LinkedIn login in the browser
-- The dashboard runs on port 6500 by default
+- The dashboard runs on port 6500 by default (see below)
 - Comments use GPT-4o-mini for cost efficiency
 - All tracking files prevent duplicate actions (won't repost or regenerate)
+
+## Dashboard binding and debug mode
+
+The dashboard binds **`127.0.0.1` only**, and Flask debug mode is **off**.
+
+The bind address is not configurable. Every endpoint is unauthenticated and
+several of them drive a logged-in LinkedIn session, so loopback is the only
+thing keeping that API off the network. Exposing the dashboard more widely
+needs authentication first, which this project does not have yet.
+
+Two optional environment variables, both documented in `.env.example`:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LINKEDIN_DASHBOARD_PORT` | `6500` | Port to serve on. A value that is not a number, or is outside 1-65535, logs a warning and falls back to 6500. |
+| `LINKEDIN_DASHBOARD_DEBUG` | unset (off) | Set to `1` to enable Flask debug mode. |
+
+**Leave `LINKEDIN_DASHBOARD_DEBUG` unset.** Debug mode loads the Werkzeug
+interactive debugger, which executes Python typed into the browser. That is
+the debugger working as designed, and it is exactly why it must not be on by
+default. It also enables the reloader, which forks a second process and is why
+stray servers used to survive Ctrl+C. Turn it on for one debugging session,
+then unset it.
+
+Unhandled errors return a generic JSON 500. The traceback goes to the server
+log, never to the response body, so a failure with credentials in scope cannot
+render them onto an error page.
 
 ## License
 
