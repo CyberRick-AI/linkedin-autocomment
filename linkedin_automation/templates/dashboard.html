@@ -1464,6 +1464,15 @@ header {
         </select>
       </div>
 
+      <div class="form-group" id="setBaseUrlGroup" style="display:none">
+        <label>Base URL</label>
+        <input type="text" id="setBaseUrl" placeholder="https://your-endpoint.example/v1">
+        <div class="trash-reason" style="margin-top:0.4rem">
+          Any OpenAI-compatible endpoint. This is how you use a provider that is
+          not in the list above, including one running on your own machine.
+        </div>
+      </div>
+
       <div class="form-group">
         <label>Model</label>
         <input type="text" id="setModel" placeholder="leave blank for the provider default">
@@ -1471,7 +1480,15 @@ header {
       </div>
 
       <button class="btn btn-primary" onclick="saveProvider()">Save Provider</button>
+      <button class="btn" onclick="testConnection()">Test Connection</button>
       <span id="setProviderStatus" class="trash-reason" style="margin-left:0.75rem"></span>
+      <div class="trash-reason" style="margin-top:0.75rem">
+        Test Connection sends one small prompt to check the endpoint, the model
+        name, and whether this model keeps your comments varied. It is the only
+        button here that spends money, at most two calls, logged to
+        <code>api_usage.jsonl</code>.
+      </div>
+      <div id="setProbeReport" style="margin-top:0.75rem"></div>
     </div>
 
     <!-- API keys -->
@@ -2552,18 +2569,23 @@ async function loadSettings() {
 
   const select = document.getElementById('setProvider');
   select.innerHTML = SETTINGS_PROVIDERS
-    .map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+    .map(p => `<option value="${p.name}">${p.label}</option>`).join('');
 
   document.getElementById('setKeyList').innerHTML = SETTINGS_PROVIDERS.map(p => {
     const k = p.key || {};
-    const label = k.set
-      ? `<span style="color:var(--green)">set</span> · …${k.last4} · from ${k.source}`
-      : `<span style="color:var(--text-muted)">not set</span> · or export ${p.env_var}`;
+    let label;
+    if (p.local) {
+      label = '<span style="color:var(--green)">no key needed</span> · runs locally';
+    } else if (k.set) {
+      label = `<span style="color:var(--green)">set</span> · …${k.last4} · from ${k.source}`;
+    } else {
+      label = `<span style="color:var(--text-muted)">not set</span> · or export ${p.env_var}`;
+    }
     const clear = k.set && k.source === 'keyring'
       ? `<button class="btn" onclick="clearApiKey('${p.name}')">Forget</button>` : '';
     return `<div style="display:flex;justify-content:space-between;align-items:center;
                         padding:0.5rem 0;border-bottom:1px solid var(--border)">
-              <div><strong>${p.name}</strong><div class="trash-reason">${label}</div></div>
+              <div><strong>${p.label}</strong><div class="trash-reason">${label}</div></div>
               <div>${clear}</div>
             </div>`;
   }).join('');
@@ -2586,14 +2608,30 @@ async function loadSettings() {
   }
   select.value = current.provider;
   document.getElementById('setModel').value = current.model || '';
+  document.getElementById('setBaseUrl').value = current.base_url || '';
   onProviderPicked();
 }
 
 function onProviderPicked() {
   const name = document.getElementById('setProvider').value;
   const p = SETTINGS_PROVIDERS.find(x => x.name === name);
-  document.getElementById('setModelHint').textContent =
-    p ? `Default: ${p.default_model}` : '';
+
+  // The base URL field only appears for providers that need one, so the common
+  // case stays a two field form.
+  document.getElementById('setBaseUrlGroup').style.display =
+    (p && p.requires_base_url) ? '' : 'none';
+
+  let hint = '';
+  if (p && p.default_model) {
+    hint = `Default: ${p.default_model}`;
+    if (!p.default_model_verified) {
+      hint += ' — unverified, confirm it with Test Connection';
+    }
+  } else if (p) {
+    hint = 'This provider has no default. Enter the exact model name it serves.';
+  }
+  document.getElementById('setModelHint').textContent = hint;
+  document.getElementById('setProbeReport').innerHTML = '';
 }
 
 async function saveProvider() {
@@ -2601,6 +2639,7 @@ async function saveProvider() {
   const body = {
     provider: document.getElementById('setProvider').value,
     model: document.getElementById('setModel').value.trim(),
+    base_url: document.getElementById('setBaseUrl').value.trim(),
   };
   const resp = await fetch(`/api/profiles/${currentProfile}/provider`, {
     method: 'POST',
@@ -2629,6 +2668,43 @@ async function saveApiKey() {
   document.getElementById('setKeyStatus').textContent =
     resp.ok ? `Saved for ${provider} (…${data.key.last4})` : (data.error || 'Failed');
   if (resp.ok) loadSettings();
+}
+
+async function testConnection() {
+  const provider = document.getElementById('setProvider').value;
+  const report = document.getElementById('setProbeReport');
+  if (!confirm(
+      `Send one small test prompt to ${provider}?\n\n` +
+      'This makes a real API call and costs a fraction of a cent.')) return;
+
+  report.innerHTML = '<span class="trash-reason">Testing…</span>';
+  const resp = await fetch('/api/settings/test-connection', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      provider: provider,
+      model: document.getElementById('setModel').value.trim(),
+      base_url: document.getElementById('setBaseUrl').value.trim(),
+    }),
+  });
+  const r = await resp.json();
+
+  const rows = [];
+  rows.push(r.ok
+    ? `<div style="color:var(--green)">Connected. ${r.calls} call(s).</div>`
+    : `<div style="color:var(--red)">Failed after ${r.calls || 0} call(s).</div>`);
+  if (r.error) rows.push(`<div class="trash-reason">${r.error}</div>`);
+  if (r.ok) {
+    rows.push(`<div class="trash-reason">Model: ${r.model}</div>`);
+    rows.push(r.temperature_accepted
+      ? '<div class="trash-reason">Temperature accepted, so comment variety works normally.</div>'
+      : '<div style="color:var(--yellow)">Temperature not accepted. Comments will be less varied on this model.</div>');
+    if (r.reasoning_stripped) {
+      rows.push('<div style="color:var(--yellow)">This model emits reasoning text. It is being filtered out, but check a few comments before trusting it.</div>');
+    }
+    if (r.text) rows.push(`<div class="trash-reason">Replied: ${r.text}</div>`);
+  }
+  report.innerHTML = rows.join('');
 }
 
 async function clearApiKey(provider) {

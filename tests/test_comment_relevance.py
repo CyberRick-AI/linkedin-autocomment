@@ -43,7 +43,8 @@ class FakeClient:
 @pytest.fixture
 def make_generator(monkeypatch, comments_dir):
     """Build a generator with the provider stubbed out (no network)."""
-    monkeypatch.setattr(providers, "get_provider", lambda name, api_key=None: FakeClient())
+    monkeypatch.setattr(providers, "get_provider",
+                        lambda name, api_key=None, base_url=None: FakeClient())
 
     def _make(config=None, client=None):
         monkeypatch.setattr(pm, "get_profile_config", lambda profile_name=None: config or {})

@@ -7,11 +7,29 @@ browser/network boundary is never crossed, and no OpenAI/LinkedIn calls happen.
 import pytest
 
 from linkedin_automation import profile_manager as pm
+from linkedin_automation import providers
 from linkedin_automation import dashboard as linkedin_dashboard
 
 
 # Canonical activity-URL template used across tests.
 ACTIVITY_URL = "https://www.linkedin.com/feed/update/urn:li:activity:{}/"
+
+
+@pytest.fixture(autouse=True)
+def cost_ledger(tmp_path, monkeypatch):
+    """Redirect api_usage.jsonl into tmp for every test.
+
+    The ledger is a cost-discipline record: it is meant to answer "how much has
+    this project actually spent". Tests exercise the generator, which logs a
+    line per would-be call, so without this every test run appended fake spend
+    to the real file and the answer became unreadable. Found 2026-08-01 with
+    253 accumulated lines, all of them test noise.
+
+    Yields the redirected path so a test can assert on what was written.
+    """
+    ledger = tmp_path / "api_usage.jsonl"
+    monkeypatch.setattr(providers, "API_USAGE_FILE", str(ledger))
+    return ledger
 
 
 @pytest.fixture

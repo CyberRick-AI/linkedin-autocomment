@@ -231,9 +231,10 @@ class PostGenerator:
         # Provider and model are configuration (ROADMAP Phase 8). Resolved
         # here, at construction, so a bad provider name fails before the first
         # post is queued rather than partway through a run.
-        self.provider_name, configured_model = providers.resolve_provider_config(config)
+        self.provider_name, configured_model, base_url = \
+            providers.resolve_provider_config(config)
         self.model = model or configured_model
-        self.provider = providers.get_provider(self.provider_name)
+        self.provider = providers.get_provider(self.provider_name, base_url=base_url)
 
         self.pg_persona = pg.get("persona") or DEFAULT_PERSONA
         self.pg_tone = pg.get("tone") or ""

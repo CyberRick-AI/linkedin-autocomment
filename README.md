@@ -388,32 +388,70 @@ uv run python tools/connector_dump.py "<people-search-url>" --profile <name>   #
 
 Comment and post generation runs through whichever provider the profile is
 configured for. Set it in the dashboard's **Settings** tab: pick a provider,
-optionally override the model, and paste an API key.
+optionally override the model, paste an API key, and press **Test Connection**.
 
 | Provider | Default model | Env var (fallback) |
 |---|---|---|
 | OpenAI (default) | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` |
 | xAI | `grok-4` | `XAI_API_KEY` |
+| DeepSeek | `deepseek-chat` | `DEEPSEEK_API_KEY` |
+| Groq | *(enter one)* | `GROQ_API_KEY` |
+| Together AI | *(enter one)* | `TOGETHER_API_KEY` |
+| OpenRouter | *(enter one)* | `OPENROUTER_API_KEY` |
+| Mistral | *(enter one)* | `MISTRAL_API_KEY` |
+| Fireworks AI | *(enter one)* | `FIREWORKS_API_KEY` |
+| Ollama (local) | *(enter one)* | none needed |
+| **Custom (OpenAI-compatible)** | *(enter one)* | `CUSTOM_API_KEY` |
+
+**You are not limited to that list.** Pick **Custom**, paste any
+OpenAI-compatible base URL and a model name, and it works with no code change.
+That covers Hermes, anything on a provider not listed above, and anything you
+run yourself. Models marked *(enter one)* have no default because model names
+on those services change often, and a stale guess is worse than an empty field.
 
 Switching provider takes effect on the next generation run. It does not touch
-your persona, tone, or voice settings, and it needs no code change or restart.
+your persona, tone, or voice settings, and needs no restart.
 
-**API keys go to the OS credential store** (Keychain on macOS), not to
-`.env` and not to `profiles.json`. The Settings screen is write-only: once a
-key is saved it can never be read back through the UI, which shows only whether
-a key is set and its last four characters. The environment variables above
-remain supported as a fallback for installs without a credential store; a
-stored key takes precedence over one in the environment.
+### Test Connection
+
+**This is the only button in the project that deliberately spends money**, and
+only when you press it. It sends one small prompt, at most twice, logs each
+call to `api_usage.jsonl` first, and reports:
+
+- whether the endpoint and model name are right,
+- whether the model accepts `temperature`, which is what keeps your comments
+  from all sounding the same,
+- whether the model leaks its own reasoning into the answer.
+
+Use it whenever you add a provider. Finding these out here costs a fraction of
+a cent; finding them out during a real run costs a bad comment.
+
+### Two things that vary between providers
+
+**Temperature.** Anthropic's 5-series and Opus 4.7+, and OpenAI's reasoning
+models, reject or ignore `temperature`. This project varies it deliberately so
+comments do not all read the same. The adapter omits the parameter for models
+that will not take it rather than failing the call, so they still work, just
+with flatter variety. Test Connection tells you which case you are in.
+
+**Reasoning models.** Some models emit their chain of thought, either in
+`<think>` tags or as a separate field. Unfiltered, that would become the text
+posted as your comment. It is stripped from every response automatically. If a
+response is *entirely* reasoning, the raw text is kept rather than returning an
+empty comment, so the failure is visible at your review gate instead of silent.
+
+### API keys
+
+Keys go to the OS credential store (Keychain on macOS), not to `.env` and not
+to `profiles.json`. The Settings screen is write-only: once saved, a key can
+never be read back through the UI, which shows only whether a key is set and
+its last four characters. The environment variables above remain supported as a
+fallback; a stored key takes precedence over one in the environment. Ollama
+needs no key at all and is never asked for one.
 
 Anthropic's default is Haiku deliberately. This workload is short-form
 generation and yes/no relevance scoring, and never needs Opus-depth reasoning.
-
-One wrinkle worth knowing if you change the Anthropic model: Anthropic's
-5-series and Opus 4.7+ reject the `temperature` parameter, which this project
-varies deliberately to keep comments from sounding identical. The adapter
-detects those models and omits it rather than failing the call, so they work,
-but comment variety is flatter on them than on Haiku 4.5.
 
 ## Dashboard binding and debug mode
 

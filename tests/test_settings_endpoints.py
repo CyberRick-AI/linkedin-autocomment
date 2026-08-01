@@ -33,11 +33,36 @@ def _clean_provider_env(monkeypatch):
 
 # ─── The provider catalogue ───────────────────────────────────────────────────
 
-def test_providers_endpoint_lists_all_three(api_client):
+def test_providers_endpoint_lists_the_whole_registry(api_client):
     body = api_client.get("/api/settings/providers").get_json()
     names = [p["name"] for p in body["providers"]]
-    assert names == ["openai", "anthropic", "xai"]
+    assert names == list(providers.SPECS)
     assert body["default_provider"] == "openai"
+    # The open-list options, which are what make this not a fixed menu.
+    assert "custom" in names
+    assert "ollama" in names
+
+
+def test_custom_provider_is_advertised_as_needing_a_base_url(api_client):
+    body = api_client.get("/api/settings/providers").get_json()
+    custom = next(p for p in body["providers"] if p["name"] == "custom")
+    assert custom["requires_base_url"] is True
+    assert custom["base_url"] == ""
+
+
+def test_local_providers_are_not_asked_for_a_key(api_client):
+    body = api_client.get("/api/settings/providers").get_json()
+    ollama = next(p for p in body["providers"] if p["name"] == "ollama")
+    assert ollama["local"] is True
+    assert ollama["key"]["set"] is True
+    assert ollama["key"]["source"] == "local"
+
+
+def test_unverified_default_models_are_flagged_to_the_ui(api_client):
+    body = api_client.get("/api/settings/providers").get_json()
+    by_name = {p["name"]: p for p in body["providers"]}
+    assert by_name["openai"]["default_model_verified"] is True
+    assert by_name["xai"]["default_model_verified"] is False
 
 
 def test_providers_endpoint_reports_key_status_without_the_key(api_client):
@@ -196,6 +221,113 @@ def test_deleting_a_key_clears_it(api_client):
 
 def test_deleting_an_unknown_provider_is_a_400(api_client):
     assert api_client.delete("/api/settings/api-key/nonsense").status_code == 400
+
+
+# ─── Custom / open provider list (Phase 8b) ───────────────────────────────────
+
+def test_custom_provider_round_trips_with_a_base_url(api_client):
+    """The whole point of 8b: a provider nobody coded for, configured in the UI."""
+    name = _make_profile(api_client)
+    resp = api_client.post(f"/api/profiles/{name}/provider", json={
+        "provider": "custom",
+        "model": "hermes-4-405b",
+        "base_url": "https://inference.example.invalid/v1",
+    })
+    assert resp.status_code == 200
+
+    body = api_client.get(f"/api/profiles/{name}/provider").get_json()
+    assert body["provider"] == "custom"
+    assert body["model"] == "hermes-4-405b"
+    assert body["base_url"] == "https://inference.example.invalid/v1"
+
+
+def test_custom_without_a_base_url_is_rejected_before_it_is_saved(api_client):
+    """A config that cannot resolve must never be persisted."""
+    name = _make_profile(api_client)
+    resp = api_client.post(f"/api/profiles/{name}/provider",
+                           json={"provider": "custom", "model": "m"})
+    assert resp.status_code == 400
+    assert "base_url" in resp.get_json()["error"]
+
+    # And the profile is untouched, still on the default.
+    assert api_client.get(f"/api/profiles/{name}/provider").get_json()["provider"] == "openai"
+
+
+def test_provider_without_a_default_model_is_rejected_without_one(api_client):
+    name = _make_profile(api_client)
+    resp = api_client.post(f"/api/profiles/{name}/provider", json={"provider": "groq"})
+    assert resp.status_code == 400
+    assert "model" in resp.get_json()["error"].lower()
+
+
+def test_non_string_base_url_is_a_400(api_client):
+    name = _make_profile(api_client)
+    resp = api_client.post(f"/api/profiles/{name}/provider",
+                           json={"provider": "custom", "model": "m", "base_url": 42})
+    assert resp.status_code == 400
+
+
+# ─── Test Connection ──────────────────────────────────────────────────────────
+
+def test_test_connection_reports_the_probe_result(api_client, monkeypatch):
+    monkeypatch.setattr(providers, "probe", lambda provider, model=None, base_url=None,
+                        api_key=None: {"ok": True, "provider": provider, "model": model,
+                                       "calls": 1, "temperature_accepted": True,
+                                       "reasoning_stripped": False,
+                                       "text": "connection ok", "error": None})
+    resp = api_client.post("/api/settings/test-connection",
+                           json={"provider": "openai", "model": "gpt-4o-mini"})
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+    assert resp.get_json()["temperature_accepted"] is True
+
+
+def test_test_connection_passes_the_custom_base_url_through(api_client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(providers, "probe",
+                        lambda provider, model=None, base_url=None, api_key=None:
+                        seen.update(provider=provider, model=model, base_url=base_url)
+                        or {"ok": True, "calls": 1, "error": None})
+    api_client.post("/api/settings/test-connection", json={
+        "provider": "custom", "model": "m", "base_url": "https://x.invalid/v1"})
+    assert seen == {"provider": "custom", "model": "m", "base_url": "https://x.invalid/v1"}
+
+
+def test_a_failed_probe_is_a_200_carrying_the_reason(api_client, monkeypatch):
+    """The report is the result; the UI has to render why it failed."""
+    monkeypatch.setattr(providers, "probe", lambda provider, **kw: {
+        "ok": False, "calls": 2, "error": "401 unauthorized"})
+    resp = api_client.post("/api/settings/test-connection", json={"provider": "openai"})
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is False
+    assert "401" in resp.get_json()["error"]
+
+
+@pytest.mark.parametrize("body", [
+    {"provider": "nonsense"},
+    {},
+    {"provider": "openai", "model": 42},
+    {"provider": "openai", "base_url": []},
+])
+def test_malformed_test_connection_requests_are_4xx(api_client, body):
+    resp = api_client.post("/api/settings/test-connection", json=body)
+    assert resp.status_code == 400
+
+
+def test_test_connection_never_runs_by_itself(api_client, monkeypatch):
+    """It spends money, so nothing but an explicit POST may trigger it."""
+    called = {"n": 0}
+    monkeypatch.setattr(providers, "probe",
+                        lambda provider, **kw:
+                        called.update(n=called["n"] + 1) or {"ok": True})
+
+    api_client.get("/api/settings/providers")
+    name = _make_profile(api_client)
+    api_client.get(f"/api/profiles/{name}/provider")
+    api_client.post(f"/api/profiles/{name}/provider", json={"provider": "openai"})
+    api_client.post("/api/settings/api-key", json={"provider": "openai", "api_key": SECRET})
+
+    assert called["n"] == 0
 
 
 def test_key_status_falls_back_to_the_environment(api_client, monkeypatch):

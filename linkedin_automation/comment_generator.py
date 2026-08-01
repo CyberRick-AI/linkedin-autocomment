@@ -131,12 +131,16 @@ class AuthenticLinkedInCommentGenerator:
         # ``model`` argument still wins, which is what --model on the CLI uses.
         # Constructed after the config load, so a bad provider name fails here
         # at startup rather than at the first generation call mid-run.
-        self.provider_name, configured_model = providers.resolve_provider_config(self.config)
+        self.provider_name, configured_model, base_url = \
+            providers.resolve_provider_config(self.config)
         self.model = model or configured_model
-        self.provider = providers.get_provider(self.provider_name)
+        self.provider = providers.get_provider(self.provider_name, base_url=base_url)
         # The relevance check is a cheap yes/no on the same provider, so a user
         # who switched to Anthropic is not silently still billed by OpenAI.
-        self.relevance_model = providers.DEFAULT_MODELS[self.provider_name]
+        # Falls back to the generation model for providers with no cheap
+        # default of their own (Groq, Together, a custom endpoint).
+        self.relevance_model = \
+            providers.get_spec(self.provider_name).default_model or self.model
 
         # When true (default), every accepted comment is validated for on-topic
         # relevance with one extra cheap call, and off-topic/forced-expertise
@@ -205,18 +209,19 @@ RESPOND WITH JSON:
 }}"""
     
     def _log_api_usage(self, endpoint: str, est_cost: float, model: str = None):
-        """Append a paid-API-call record to api_usage.jsonl (CLAUDE.md cost discipline)."""
-        try:
-            with open("api_usage.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "timestamp": datetime.now().isoformat(),
-                    "api": "openai",
-                    "model": model or self.model,
-                    "endpoint": endpoint,
-                    "estimated_cost": est_cost,
-                }) + "\n")
-        except Exception:
-            self.logger.debug("Failed to write api_usage.jsonl", exc_info=True)
+        """Append a paid-API-call record to the cost ledger (CLAUDE.md cost discipline).
+
+        Delegates to the one writer in ``providers`` rather than opening the
+        file itself, so the ledger has a single implementation and a single
+        redirectable path. Also fixes the provider label, which was hardcoded to
+        "openai" and so mislabelled every Anthropic or DeepSeek call.
+        """
+        providers.log_api_usage(
+            provider=self.provider_name,
+            model=model or self.model,
+            endpoint=endpoint,
+            est_cost=est_cost,
+        )
 
     def evaluate_post_quality(self, post: Dict) -> Dict:
         """Evaluate if post is worth commenting on."""

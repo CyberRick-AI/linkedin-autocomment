@@ -14,7 +14,8 @@ from linkedin_automation import human_behavior as hb
 @pytest.fixture
 def make_gen(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "get_data_dir", lambda profile_name=None, subdir=None: str(tmp_path))
-    monkeypatch.setattr(providers, "get_provider", lambda name, api_key=None: object())
+    monkeypatch.setattr(providers, "get_provider",
+                        lambda name, api_key=None, base_url=None: object())
 
     def _make(config):
         monkeypatch.setattr(pm, "get_profile_config", lambda profile_name=None: config)

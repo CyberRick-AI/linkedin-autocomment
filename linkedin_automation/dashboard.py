@@ -508,12 +508,18 @@ def get_providers_route():
     return jsonify({
         "providers": [
             {
-                "name": name,
-                "default_model": providers.DEFAULT_MODELS[name],
-                "env_var": providers.API_KEY_ENV[name],
-                "key": pm.api_key_status(name),
+                "name": spec.name,
+                "label": spec.label,
+                "default_model": spec.default_model,
+                "default_model_verified": spec.default_model_verified,
+                "base_url": spec.base_url or "",
+                "requires_base_url": spec.requires_base_url,
+                "local": spec.local,
+                "env_var": spec.key_env,
+                "key": {"set": True, "source": "local", "last4": ""} if spec.local
+                       else pm.api_key_status(spec.name),
             }
-            for name in providers.PROVIDERS
+            for spec in providers.SPECS.values()
         ],
         "default_provider": providers.DEFAULT_PROVIDER,
         "credential_store_available": pm.keyring_available(),
@@ -524,14 +530,17 @@ def get_providers_route():
 def get_profile_provider_route(name):
     """GET /api/profiles/<name>/provider — this profile's provider and model."""
     try:
-        provider, model = providers.resolve_provider_config(pm.get_profile_config(name))
+        provider, model, base_url = providers.resolve_provider_config(
+            pm.get_profile_config(name))
     except providers.ProviderError as e:
-        # A config saved with a bad provider name. Report it rather than
-        # papering over it with the default, so the user can see what to fix.
+        # A config saved with a bad provider name, a custom provider with no
+        # base URL, or a provider with no model. Report it rather than papering
+        # over it with a default, so the user can see what to fix.
         return jsonify({"error": str(e)}), 400
     return jsonify({
         "provider": provider,
         "model": model,
+        "base_url": base_url or "",
         "key": pm.api_key_status(provider),
     })
 
@@ -559,16 +568,34 @@ def set_profile_provider_route(name):
     model = body.get("model")
     if model is not None and not isinstance(model, str):
         return jsonify({"error": "model must be a string"}), 400
-    model = (model or "").strip() or providers.DEFAULT_MODELS[provider]
+    spec = providers.get_spec(provider)
+    model = (model or "").strip() or spec.default_model
+
+    base_url = body.get("base_url")
+    if base_url is not None and not isinstance(base_url, str):
+        return jsonify({"error": "base_url must be a string"}), 400
+    base_url = (base_url or "").strip()
+
+    # Validate the combination before writing it, so a config that cannot
+    # resolve is never persisted. This is what makes the Custom option safe:
+    # a base URL is demanded up front rather than at the first generation run.
+    candidate = {"name": provider, "model": model}
+    if base_url:
+        candidate["base_url"] = base_url
+    try:
+        providers.resolve_provider_config({"provider": candidate})
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
 
     config = pm.get_profile_config(name)
-    config["provider"] = {"name": provider, "model": model}
+    config["provider"] = candidate
     pm.save_profile_config(name, config)
 
     return jsonify({
         "ok": True,
         "provider": provider,
         "model": model,
+        "base_url": base_url,
         "key": pm.api_key_status(provider),
     })
 
@@ -603,6 +630,46 @@ def set_api_key_route():
         return jsonify({"error": str(e)}), 409
 
     return jsonify({"ok": True, "provider": provider, "key": pm.api_key_status(provider)})
+
+
+@app.route('/api/settings/test-connection', methods=['POST'])
+def test_connection_route():
+    """POST /api/settings/test-connection — probe a provider with one small call.
+
+    Body: ``{"provider": "...", "model": "...", "base_url": "..."}``.
+
+    **This is the one endpoint in the project that deliberately spends money**,
+    and it spends it only because a human pressed the button. Two calls maximum,
+    matching the retry cap in PROJECT.md, logged to ``api_usage.jsonl`` before
+    each call.
+
+    It exists because provider quirks cannot be enumerated in advance. Finding
+    out that a model rejects temperature or leaks its reasoning is far cheaper
+    here than during a real generation run.
+    """
+    body = request.json if request.is_json else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    provider = (body.get("provider") or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    for field_name in ("model", "base_url"):
+        value = body.get(field_name)
+        if value is not None and not isinstance(value, str):
+            return jsonify({"error": f"{field_name} must be a string"}), 400
+
+    report = providers.probe(
+        provider,
+        model=(body.get("model") or "").strip() or None,
+        base_url=(body.get("base_url") or "").strip() or None,
+    )
+    # A failed probe is a 200 with ok=False, not an HTTP error: the report is
+    # the result, and the UI needs to render why it failed.
+    return jsonify(report)
 
 
 @app.route('/api/settings/api-key/<provider>', methods=['DELETE'])
