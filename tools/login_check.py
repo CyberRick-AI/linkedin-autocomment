@@ -28,6 +28,12 @@ import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+from selenium.common.exceptions import (
+    InvalidSessionIdException,
+    NoSuchWindowException,
+    WebDriverException,
+)
+
 from linkedin_automation import profile_manager as pm
 
 logger = logging.getLogger(__name__)
@@ -81,6 +87,24 @@ def check_login(profile_name: str = None, wait_for_manual: bool = True) -> int:
     except ValueError as e:
         # Raised by create_driver for missing/unknown profile.
         print(f"❌ {e}")
+        return pm.EXIT_ERROR
+    except (NoSuchWindowException, InvalidSessionIdException, WebDriverException) as e:
+        # The browser is gone. Overwhelmingly this means the user closed the
+        # Chrome window instead of pressing Enter, which the tool's own message
+        # used to tell them to do. Reporting that as a generic error made a
+        # successful login look like a failure.
+        message = str(e).lower()
+        if any(m in message for m in ("no such window", "target window already closed",
+                                      "web view not found", "invalid session id",
+                                      "disconnected", "not connected")):
+            print(
+                "\n⚠️  The Chrome window was closed before the re-check.\n"
+                "   Your session is almost certainly saved: closing the browser\n"
+                "   does not discard it. Confirm with:\n"
+                f"   python tools/login_check.py --profile {profile_name or 'default'} --no-wait"
+            )
+            return pm.EXIT_LOGIN_REQUIRED
+        print(f"❌ Browser error while checking login status: {e}")
         return pm.EXIT_ERROR
     except Exception as e:
         print(f"❌ Could not check login status: {e}")

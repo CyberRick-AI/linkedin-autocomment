@@ -25,6 +25,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Ceiling for a single pipeline step. Generous enough for a full scrape with
+# human-paced delays, short enough that a hung browser fails the run instead of
+# stalling it indefinitely.
+STEP_TIMEOUT_SECONDS = 45 * 60
+
 
 class LinkedInWorkflowRunner:
     """Orchestrates the full LinkedIn engagement workflow"""
@@ -80,7 +85,11 @@ class LinkedInWorkflowRunner:
             capture_output=True,
             text=True,
             encoding='utf-8',
-            errors='replace'
+            errors='replace',
+            # A pipeline step drives a browser, so it is slow but not unbounded.
+            # Without a ceiling a hung Chrome blocks the whole workflow with no
+            # diagnostic; the run is more useful failed than stalled.
+            timeout=STEP_TIMEOUT_SECONDS,
         )
         
         # Print the output
@@ -218,7 +227,11 @@ class LinkedInWorkflowRunner:
             capture_output=True,
             text=True,
             encoding='utf-8',
-            errors='replace'
+            errors='replace',
+            # A pipeline step drives a browser, so it is slow but not unbounded.
+            # Without a ceiling a hung Chrome blocks the whole workflow with no
+            # diagnostic; the run is more useful failed than stalled.
+            timeout=STEP_TIMEOUT_SECONDS,
         )
         
         # Print the output

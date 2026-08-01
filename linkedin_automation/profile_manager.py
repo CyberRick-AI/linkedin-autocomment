@@ -12,6 +12,8 @@ import json
 import time
 import logging
 import getpass
+import sys
+from enum import Enum
 from typing import Optional, Dict, Tuple
 
 # Route TLS through the OS trust store so webdriver-manager (which uses requests)
@@ -49,6 +51,44 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_LOGIN_REQUIRED = 2
+
+# Explicit page load ceiling. Selenium defaults to 300s, which turns a slow or
+# hanging navigation into a multi-minute stall with no diagnostic.
+PAGE_LOAD_TIMEOUT_SECONDS = 45
+
+
+def wait_for_human(prompt: str) -> bool:
+    """Block for a human at a terminal. Return False if there is no terminal.
+
+    The dashboard launches the finder, poster and connector with
+    ``sys.executable -m``, so those processes have no stdin. A bare ``input()``
+    on such a path does not prompt anybody: it blocks forever, and the job sits
+    in the dashboard as "running" with no further output and no error.
+
+    Callers must handle False by stopping with an actionable message rather
+    than continuing as if the human had answered.
+    """
+    if not sys.stdin or not sys.stdin.isatty():
+        return False
+    try:
+        input(prompt)
+        return True
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+class LoginStatus(Enum):
+    """Three-state login result.
+
+    A two-state check has to invent an answer when it cannot tell, and the
+    invented answer here was "logged out", which is the branch that types the
+    user's password into LinkedIn. UNKNOWN exists so that branch is never
+    entered on a guess.
+    """
+
+    LOGGED_IN = "logged_in"
+    LOGGED_OUT = "logged_out"
+    UNKNOWN = "unknown"
 
 
 class LoginRequiredError(RuntimeError):
@@ -216,7 +256,11 @@ def load_profiles() -> Dict:
         return default
 
     try:
-        with open(PROFILES_FILE, 'r', encoding='utf-8') as f:
+        # utf-8-sig, not utf-8: Windows tools (PowerShell Set-Content) write a
+        # BOM by default, and a BOM raised UnicodeDecodeError here, which the
+        # handler below reported as "unreadable; starting fresh" — silently
+        # losing every profile. utf-8-sig reads correctly with or without one.
+        with open(PROFILES_FILE, 'r', encoding='utf-8-sig') as f:
             content = f.read().strip()
         if not content:
             return default
@@ -285,8 +329,14 @@ def add_profile(name: str, username: str, password: str, set_default: bool = Fal
     """
     data = load_profiles()
 
+    # Stored RELATIVE to PROFILES_DIR. An absolute path captured here is only
+    # correct until the install is moved or renamed, after which Chrome is
+    # handed a dead path, creates a fresh empty profile there, and the user
+    # lands on the login wall with no indication why. Resolution happens at
+    # use time via resolve_session_dir().
     session_dir = os.path.join(CHROME_SESSIONS_DIR, name)
     os.makedirs(session_dir, exist_ok=True)
+    stored_session_dir = os.path.join("chrome_sessions", name)
 
     location = set_profile_password(name, password)
 
@@ -294,7 +344,7 @@ def add_profile(name: str, username: str, password: str, set_default: bool = Fal
         "username": username,
         "password": None if location == LOCATION_KEYRING else password,
         "password_location": location,
-        "session_dir": session_dir,
+        "session_dir": stored_session_dir,
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "last_used": None
     }
@@ -516,6 +566,57 @@ def auto_migrate_from_env():
 
 # ─── Chrome Driver with Persistent Session ────────────────────────────────────
 
+def _looks_absolute(path: str) -> bool:
+    """True for an absolute path on *either* platform.
+
+    ``os.path.isabs`` only understands the host's convention, so a Windows
+    path like ``C:\\Users\\...`` reads as *relative* on macOS and would be
+    joined onto the data root. profiles.json is portable data — a user with
+    installs on both machines can copy it — so absoluteness has to be judged
+    for both conventions.
+    """
+    if not path:
+        return False
+    if os.path.isabs(path):
+        return True
+    if len(path) >= 3 and path[0].isalpha() and path[1] == ":" and path[2] in "\\/":
+        return True          # C:\... or C:/...
+    return path.startswith("\\\\")   # UNC \\server\share
+
+
+def resolve_session_dir(profile: Dict, name: str = None) -> str:
+    """Return the absolute Chrome session directory for a profile.
+
+    Handles three cases so an install can be moved without breaking:
+
+    * **Relative** (written by current code): joined to the live ``PROFILES_DIR``.
+    * **Absolute and still present** (legacy, install not moved): used as-is.
+    * **Absolute and gone** (legacy, install moved): falls back to the canonical
+      location under the current data root, with a warning. Previously this was
+      the silent failure that produced an empty Chrome profile and a login wall.
+    """
+    stored = (profile or {}).get("session_dir") or ""
+    name = name or (profile or {}).get("name")
+    canonical = os.path.join(CHROME_SESSIONS_DIR, name) if name else ""
+
+    if stored and not _looks_absolute(stored):
+        return os.path.join(PROFILES_DIR, stored)
+
+    if stored and os.path.isdir(stored):
+        return stored
+
+    if canonical:
+        if stored:
+            logger.warning(
+                "Profile %r records a session directory that no longer exists "
+                "(%s). The install was probably moved or renamed. Using %s "
+                "instead.", name, stored, canonical
+            )
+        return canonical
+
+    return stored
+
+
 def session_exists(session_dir: str) -> bool:
     """Best-effort check for whether a profile already has a Chrome session.
 
@@ -561,7 +662,7 @@ def create_driver(profile_name: str = None, headless: bool = False) -> Tuple[web
 
     # If this profile has no persistent Chrome session yet, tell the user how to
     # establish one instead of letting an automated login silently fail later.
-    if not session_exists(profile.get('session_dir', '')):
+    if not session_exists(resolve_session_dir(profile, profile_name)):
         logger.warning(
             "No existing Chrome session for profile '%s'. A browser window will "
             "open: log in to LinkedIn manually, then close it — your session "
@@ -572,7 +673,9 @@ def create_driver(profile_name: str = None, headless: bool = False) -> Tuple[web
 
     # Setup Chrome options with persistent user-data-dir
     options = Options()
-    options.add_argument(f"--user-data-dir={os.path.abspath(profile['session_dir'])}")
+    session_dir = resolve_session_dir(profile, profile_name)
+    os.makedirs(session_dir, exist_ok=True)
+    options.add_argument(f"--user-data-dir={os.path.abspath(session_dir)}")
     options.add_argument("--profile-directory=Default")
     
     # Anti-detection
@@ -590,6 +693,11 @@ def create_driver(profile_name: str = None, headless: bool = False) -> Tuple[web
     
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
+    # Selenium's default page load timeout is 300s. A hanging navigation then
+    # blocks for five minutes and surfaces as an ambiguous login status, which
+    # is what previously led to an automated credential login. Fail fast and
+    # let the caller report UNKNOWN instead.
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
     driver.maximize_window()
     
     # Anti-detection JS
@@ -627,16 +735,43 @@ def is_logged_in_on_page(driver: webdriver.Chrome) -> bool:
     empty search (a valid logged-in page with zero result cards) is correctly
     reported as logged in — "no results" is not "not logged in".
     """
+    return login_status_on_page(driver) is LoginStatus.LOGGED_IN
+
+
+def login_status_on_page(driver: webdriver.Chrome) -> "LoginStatus":
+    """Return the three-state login status of the page already loaded.
+
+    ``is_logged_in_on_page`` collapses this to a bool for callers that only
+    need "may I proceed". Anything that would act on a negative — above all
+    ``login``, which types the stored password — must use this instead.
+
+    UNKNOWN is not a failure. It means the URL matched neither the logged-out
+    markers nor the logged-in ones: a page that did not finish loading, an
+    interstitial, or a LinkedIn URL shape nobody has seen yet. Treating that as
+    "logged out" is what previously authorized an automated credential login
+    against a session that was in fact perfectly valid.
+    """
     try:
         current_url = driver.current_url or ""
-        if any(marker in current_url for marker in LOGGED_OUT_URL_MARKERS):
-            return False
-        if any(marker in current_url for marker in LOGGED_IN_URL_MARKERS):
-            return True
-        return False
     except Exception as e:
-        logger.debug(f"Login check (current page) error: {e}")
-        return False
+        # The window is gone, or the driver is dead. Not evidence of logout.
+        logger.warning(
+            "Could not read the current URL to determine login status (%s); "
+            "reporting UNKNOWN rather than assuming logged out", e
+        )
+        return LoginStatus.UNKNOWN
+
+    if any(marker in current_url for marker in LOGGED_OUT_URL_MARKERS):
+        return LoginStatus.LOGGED_OUT
+    if any(marker in current_url for marker in LOGGED_IN_URL_MARKERS):
+        return LoginStatus.LOGGED_IN
+
+    logger.warning(
+        "Login status is UNKNOWN: URL %r matches neither the logged-in nor the "
+        "logged-out markers. Not treating this as logged out.",
+        current_url[:120],
+    )
+    return LoginStatus.UNKNOWN
 
 
 def is_logged_in(driver: webdriver.Chrome) -> bool:
@@ -647,13 +782,28 @@ def is_logged_in(driver: webdriver.Chrome) -> bool:
     the session is valid. The old element wait used stale selectors and required
     the feed to be scrolled (posts lazy-load), producing false "not logged in".
     """
+    return login_status(driver) is LoginStatus.LOGGED_IN
+
+
+def login_status(driver: webdriver.Chrome) -> LoginStatus:
+    """Navigate to the feed and return the three-state login status.
+
+    A navigation that times out or raises yields UNKNOWN, never LOGGED_OUT.
+    The two are not the same, and only one of them should lead to typing a
+    password.
+    """
     try:
         driver.get('https://www.linkedin.com/feed/')
-        time.sleep(4)
-        return is_logged_in_on_page(driver)
     except Exception as e:
-        logger.debug(f"Login check error: {e}")
-        return False
+        logger.warning(
+            "Navigation to the LinkedIn feed failed while checking login "
+            "status (%s). Reporting UNKNOWN: a failed navigation is not "
+            "evidence that the session expired.", e
+        )
+        return LoginStatus.UNKNOWN
+
+    time.sleep(4)
+    return login_status_on_page(driver)
 
 
 def login(driver: webdriver.Chrome, profile: Dict) -> bool:
@@ -661,13 +811,26 @@ def login(driver: webdriver.Chrome, profile: Dict) -> bool:
     Login to LinkedIn. Checks if already logged in first (persistent session).
     """
     logger.info("Checking login status...")
-    
-    if is_logged_in(driver):
+
+    status = login_status(driver)
+    if status is LoginStatus.LOGGED_IN:
         logger.info("✓ Already logged in (persistent session)")
         return True
-    
+
+    if status is LoginStatus.UNKNOWN:
+        # Do NOT fall through to the credential login. An ambiguous result is
+        # usually a page that did not load, not an expired session, and typing
+        # the password is the single most flagged action available to us.
+        logger.error(
+            "Could not determine login status (the page matched neither the "
+            "logged-in nor the logged-out markers). Refusing to attempt an "
+            "automated credential login on an ambiguous result. Run: "
+            "python tools/login_check.py --profile <name>"
+        )
+        return False
+
     logger.info("Not logged in, performing fresh login...")
-    
+
     try:
         driver.get('https://www.linkedin.com/login')
         time.sleep(2)
@@ -696,7 +859,14 @@ def login(driver: webdriver.Chrome, profile: Dict) -> bool:
         
         if "checkpoint" in driver.current_url or "challenge" in driver.current_url:
             logger.warning("⚠ Security checkpoint - please complete manually")
-            input("Press Enter after completing the checkpoint...")
+            if not wait_for_human("Press Enter after completing the checkpoint..."):
+                logger.error(
+                    "A LinkedIn security checkpoint needs a human, but this "
+                    "process has no terminal (it was launched by the dashboard "
+                    "or a scheduler). Stopping instead of blocking forever. "
+                    "Run: python tools/login_check.py --profile <name>"
+                )
+                return False
             if "feed" in driver.current_url or "/in/" in driver.current_url:
                 logger.info("✓ Checkpoint completed, logged in")
                 return True
@@ -954,7 +1124,10 @@ Examples:
             print(f"Opening {config_path} in {editor}...")
             try:
                 import subprocess
-                subprocess.run([editor, config_path])
+                # Deliberately no timeout: this hands control to an
+                # interactive editor and the human decides when they are done.
+                # A ceiling here would kill their session mid-edit.
+                subprocess.run([editor, config_path])  # noqa: S603
             except Exception as e:
                 print(f"Could not open editor ({e}). Edit the file directly:\n  {config_path}")
         else:

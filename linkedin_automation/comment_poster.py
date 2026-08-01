@@ -685,7 +685,7 @@ class LinkedInCommentPoster:
                         self.logger.info("3. Click the comment button")
                         self.logger.info(f"4. Type: {comment['comment'][:100]}...")
                         self.logger.info("5. Click the Post/Submit button")
-                        input("\nPress Enter when you've completed these steps...")
+                        pm.wait_for_human("\nPress Enter when you've completed these steps...")
 
                         # Mark as completed
                         self.progress['posted_comments'].append(comment['url'])
@@ -732,7 +732,7 @@ class LinkedInCommentPoster:
                     self.logger.info("Browser closed")
                 else:
                     self.logger.info("Browser left open for manual inspection")
-                    input("Press Enter to close browser...")
+                    pm.wait_for_human("Press Enter to close browser...")
                     self.driver.quit()
 
 
@@ -769,7 +769,7 @@ def main():
         if poster.login():
             success = poster.post_single_comment(test_comment, force=True)  # Force posting in test mode
             print(f"Test result: {'Success' if success else 'Failed'}")
-            input("\nPress Enter to close browser...")
+            pm.wait_for_human("\nPress Enter to close browser...")
             poster.driver.quit()
             sys.exit(pm.EXIT_OK if success else pm.EXIT_ERROR)
         poster.driver.quit()
