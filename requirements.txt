@@ -1,6 +1,10 @@
 flask==3.1.3
 python-dotenv==1.2.2
 openai==2.44.0
+# Anthropic (Claude) as a selectable generation provider. Also serves xAI:
+# xAI speaks the OpenAI wire format, so its adapter reuses the openai client
+# with a different base_url and adds no dependency of its own.
+anthropic==0.120.2
 selenium==4.45.0
 webdriver-manager==4.1.2
 # Routes TLS through the OS trust store so OpenAI / webdriver-manager work behind

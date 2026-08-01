@@ -1,60 +1,54 @@
 """Tests for the on-topic relevance check in generate_authentic_linkedin_comments.
 
-No network: the OpenAI client is replaced with a scripted fake, so the suite
-makes zero live API calls (per the spec). Covers the relevance gate, the
-stay_on_post_topic flag, the prompt reframing, and api_usage logging."""
+No network: the *provider* is replaced with a scripted fake, so the suite makes
+zero live API calls (per the spec). Mocking at the provider boundary rather than
+at a vendor SDK means these tests are provider-agnostic — they exercise the same
+code path whether the profile is configured for OpenAI, Anthropic, or xAI.
+
+Covers the relevance gate, the stay_on_post_topic flag, the prompt reframing,
+and api_usage logging."""
 
 import pytest
 
 from linkedin_automation import profile_manager as pm
+from linkedin_automation import providers
 from linkedin_automation import comment_generator as gen
 
 
-# ─── Scripted fake OpenAI client (distinguishes relevance vs generation calls) ─
-
-class _Msg:
-    def __init__(self, content):
-        self.message = type("M", (), {"content": content})
-
-
-class _Resp:
-    def __init__(self, content):
-        self.choices = [_Msg(content)]
-
-
-class _FakeCompletions:
-    def __init__(self, owner):
-        self.owner = owner
-
-    def create(self, model, messages, **kwargs):
-        user = messages[-1]["content"]
-        if "Answer with exactly YES or NO" in user:
-            self.owner.relevance_calls += 1
-            ans = self.owner.relevance_outputs.pop(0) if self.owner.relevance_outputs else "YES"
-            return _Resp(ans)
-        self.owner.generation_calls += 1
-        out = self.owner.generation_outputs.pop(0) if self.owner.generation_outputs else "default comment."
-        return _Resp(out)
-
+# ─── Scripted fake provider (distinguishes relevance vs generation calls) ─────
 
 class FakeClient:
+    """Stands in for a provider adapter. Keeps the counters the tests assert on."""
+
+    name = "fake"
+
     def __init__(self, generation_outputs=None, relevance_outputs=None):
         self.generation_outputs = list(generation_outputs or [])
         self.relevance_outputs = list(relevance_outputs or [])
         self.generation_calls = 0
         self.relevance_calls = 0
-        self.chat = type("Chat", (), {"completions": _FakeCompletions(self)})()
+
+    def complete(self, model, system, user, temperature=None,
+                 max_tokens=None, json_object=False):
+        if "Answer with exactly YES or NO" in user:
+            self.relevance_calls += 1
+            text = self.relevance_outputs.pop(0) if self.relevance_outputs else "YES"
+        else:
+            self.generation_calls += 1
+            text = (self.generation_outputs.pop(0) if self.generation_outputs
+                    else "default comment.")
+        return providers.Completion(text=text.strip(), model=model, provider=self.name)
 
 
 @pytest.fixture
 def make_generator(monkeypatch, comments_dir):
-    """Build a generator with the OpenAI client stubbed out (no network)."""
-    monkeypatch.setattr(gen, "OpenAI", lambda **k: object())
+    """Build a generator with the provider stubbed out (no network)."""
+    monkeypatch.setattr(providers, "get_provider", lambda name, api_key=None: FakeClient())
 
     def _make(config=None, client=None):
         monkeypatch.setattr(pm, "get_profile_config", lambda profile_name=None: config or {})
         g = gen.AuthenticLinkedInCommentGenerator("dummy_input.json", profile_name="t")
-        g.client = client if client is not None else FakeClient()
+        g.provider = client if client is not None else FakeClient()
         return g
     return _make
 
@@ -98,13 +92,25 @@ def test_check_relevance_defaults_true_on_error(make_generator):
     assert g.check_relevance(POST_ECON, "whatever") is True
 
 
-def test_check_relevance_logs_to_api_usage_with_mini_model(make_generator):
+def test_check_relevance_logs_to_api_usage_with_cheap_model(make_generator):
+    """The relevance check logs the provider's cheap default, not the generation model.
+
+    It also has to *follow* the provider: before Phase 8 this was pinned to
+    gpt-4o-mini, so a user on Anthropic would still have been billed by OpenAI
+    for every relevance check.
+    """
     g = make_generator(client=FakeClient(relevance_outputs=["YES"]))
     logged = []
     g._log_api_usage = lambda endpoint, cost, model=None: logged.append((endpoint, model))
     g.check_relevance(POST_ECON, "comment")
-    assert logged == [("chat.completions:relevance", gen.RELEVANCE_MODEL)]
-    assert gen.RELEVANCE_MODEL == "gpt-4o-mini"
+    assert logged == [("chat.completions:relevance", g.relevance_model)]
+    assert g.relevance_model == "gpt-4o-mini"      # default profile is OpenAI
+
+
+def test_relevance_model_follows_the_configured_provider(make_generator):
+    g = make_generator(config={"provider": {"name": "anthropic"}})
+    assert g.relevance_model == providers.DEFAULT_MODELS["anthropic"]
+    assert not g.relevance_model.startswith("gpt-")
 
 
 # ─── Relevance gate inside generate_comment ───────────────────────────────────

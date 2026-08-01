@@ -23,11 +23,12 @@ try:
 except Exception:
     pass
 
-from openai import OpenAI
 from dotenv import load_dotenv
 import argparse
 import logging
 import random
+
+from . import providers
 
 load_dotenv()
 
@@ -47,9 +48,10 @@ except ImportError:
     HAS_POST_STORE = False
 
 
-# The relevance check is always a cheap model regardless of the generation model
-# the user picked, since it's one extra call per accepted comment.
-RELEVANCE_MODEL = "gpt-4o-mini"
+# The relevance check is always the configured provider's cheap default model,
+# regardless of the generation model the user picked, since it's one extra call
+# per accepted comment. Resolved per instance as self.relevance_model, so it
+# follows the provider rather than staying pinned to OpenAI.
 
 # Topic-discipline block injected into every generation prompt. The persona is
 # WHO is talking (voice/judgment), not WHAT every comment must be about — so the
@@ -83,16 +85,14 @@ subject.
 class AuthenticLinkedInCommentGenerator:
     """Generate LinkedIn comments that sound like actual humans."""
     
-    def __init__(self, input_file: str, model: str = "gpt-4o-mini", max_comments: int = None, profile_name: str = None):
+    def __init__(self, input_file: str, model: str = None, max_comments: int = None, profile_name: str = None):
         self.input_file = input_file
-        self.model = model
         # Optional cap on how many comments to generate. None (the default) means
         # no cap — generate for every post worth engaging. Comment generation is
-        # OpenAI-only (no LinkedIn interaction), so there's no rate-limit reason
+        # API-only (no LinkedIn interaction), so there's no rate-limit reason
         # to cap it; this is just an optional ceiling the user can set.
         self.max_comments = max_comments
-        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        
+
         # Setup directories (profile-specific)
         if HAS_PROFILE_MANAGER:
             resolved_name = profile_name or pm.get_default_profile_name() or "default"
@@ -125,6 +125,18 @@ class AuthenticLinkedInCommentGenerator:
             self.config = pm.get_profile_config(resolved_name)
         else:
             self.config = {}
+
+        # Provider and model come from that config (ROADMAP Phase 8), so
+        # switching to Anthropic or xAI needs no code change. An explicit
+        # ``model`` argument still wins, which is what --model on the CLI uses.
+        # Constructed after the config load, so a bad provider name fails here
+        # at startup rather than at the first generation call mid-run.
+        self.provider_name, configured_model = providers.resolve_provider_config(self.config)
+        self.model = model or configured_model
+        self.provider = providers.get_provider(self.provider_name)
+        # The relevance check is a cheap yes/no on the same provider, so a user
+        # who switched to Anthropic is not silently still billed by OpenAI.
+        self.relevance_model = providers.DEFAULT_MODELS[self.provider_name]
 
         # When true (default), every accepted comment is validated for on-topic
         # relevance with one extra cheap call, and off-topic/forced-expertise
@@ -211,17 +223,15 @@ RESPOND WITH JSON:
         try:
             # GPT-4o-mini per PROJECT.md (was hardcoded gpt-3.5-turbo).
             self._log_api_usage("chat.completions:evaluate", 0.0002)
-            response = self.client.chat.completions.create(
+            completion = self.provider.complete(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": "Evaluate LinkedIn posts for authentic engagement potential."},
-                    {"role": "user", "content": self.enhanced_quality_filter_prompt(post)}
-                ],
+                system="Evaluate LinkedIn posts for authentic engagement potential.",
+                user=self.enhanced_quality_filter_prompt(post),
                 temperature=0.3,
-                response_format={"type": "json_object"}
+                json_object=True,
             )
 
-            return json.loads(response.choices[0].message.content)
+            return json.loads(completion.text)
 
         except Exception as e:
             self.logger.error(f"Evaluation error: {e}")
@@ -232,7 +242,7 @@ RESPOND WITH JSON:
     def check_relevance(self, post: Dict, comment: str) -> bool:
         """Lightweight YES/NO check that a comment stays on the post's topic.
 
-        Uses the cheap RELEVANCE_MODEL (gpt-4o-mini) and is logged to
+        Uses the provider's cheap default model (self.relevance_model) and is logged to
         api_usage.jsonl. Returns True when the comment directly responds to the
         post without forcing in an unrelated industry/expertise angle. Defaults
         to True on any API error so a transient failure never blocks generation.
@@ -247,19 +257,16 @@ RESPOND WITH JSON:
             "did not raise? Answer with exactly YES or NO."
         )
         try:
-            self._log_api_usage("chat.completions:relevance", 0.0001, model=RELEVANCE_MODEL)
-            response = self.client.chat.completions.create(
-                model=RELEVANCE_MODEL,
-                messages=[
-                    {"role": "system",
-                     "content": "You judge whether a comment is on-topic for a post. "
-                                "Answer only YES or NO."},
-                    {"role": "user", "content": prompt},
-                ],
+            self._log_api_usage("chat.completions:relevance", 0.0001, model=self.relevance_model)
+            completion = self.provider.complete(
+                model=self.relevance_model,
+                system="You judge whether a comment is on-topic for a post. "
+                       "Answer only YES or NO.",
+                user=prompt,
                 temperature=0.0,
                 max_tokens=3,
             )
-            answer = (response.choices[0].message.content or "").strip().upper()
+            answer = completion.text.upper()
             relevant = answer.startswith("YES")
             if not relevant:
                 self.logger.info("  Relevance check: NO (off-topic / forced expertise) — regenerating")
@@ -650,20 +657,15 @@ Write ONLY the comment text:"""
                 temp = random.uniform(0.6 + (attempt * 0.1), 0.9)
 
                 self._log_api_usage("chat.completions:generate", 0.0003)
-                response = self.client.chat.completions.create(
+                completion = self.provider.complete(
                     model=self.model,
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": "You're a developer commenting casually on LinkedIn. Write like you're texting a colleague - direct, sometimes skeptical, no formality. Keep it short."
-                        },
-                        {"role": "user", "content": prompt}
-                    ],
+                    system="You're a developer commenting casually on LinkedIn. Write like you're texting a colleague - direct, sometimes skeptical, no formality. Keep it short.",
+                    user=prompt,
                     temperature=temp,
-                    max_tokens=100  # Force brevity
+                    max_tokens=100,  # Force brevity
                 )
-                
-                comment = response.choices[0].message.content.strip()
+
+                comment = completion.text
                 comment = comment.strip('"\'')  # Remove quotes if added
                 
                 # Check authenticity with new detector
@@ -959,7 +961,8 @@ def main():
     """CLI entry point: generate comments for a scraped posts JSON file."""
     parser = argparse.ArgumentParser(description='Generate authentic LinkedIn comments')
     parser.add_argument('input_file', help='Path to AI posts JSON')
-    parser.add_argument('--model', default='gpt-4o-mini', help='Model to use')
+    parser.add_argument('--model', default=None,
+                        help='Model to use (default: the profile config\'s provider model)')
     parser.add_argument('--limit', type=int, default=None,
                         help='Max comments to generate (default: no limit, generate for all engaging posts)')
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name (for data directory)')

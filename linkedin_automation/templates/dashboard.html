@@ -945,6 +945,7 @@ header {
     <button class="mode-tab" data-mode="connector" onclick="switchMode('connector')">Auto-Connector</button>
     <button class="mode-tab" data-mode="poster" onclick="switchMode('poster')">Post Creator</button>
     <button class="mode-tab" data-mode="scheduler" onclick="switchMode('scheduler')">Scheduler</button>
+    <button class="mode-tab" data-mode="settings" onclick="switchMode('settings')">Settings</button>
   </nav>
 
   <!-- Active Jobs Bar -->
@@ -1436,6 +1437,63 @@ header {
     </div>
 
   </div><!-- end mode-scheduler -->
+
+  <!-- ═══ SETTINGS MODE ════════════════════════════════ -->
+  <div class="mode-panel" id="mode-settings">
+
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Settings</div>
+        <div class="panel-subtitle">Choose which AI provider generates your comments and posts, and store its API key in your Mac's Keychain.</div>
+      </div>
+    </div>
+
+    <!-- Provider for the selected profile -->
+    <div class="poster-section" style="margin-bottom:1rem">
+      <h3>Generation Provider</h3>
+      <div class="trash-reason" style="margin-bottom:1rem">
+        Applies to the profile selected at the top of the page. Takes effect on
+        the next generation run. Changing this does not touch your persona,
+        tone, or voice.
+      </div>
+
+      <div class="form-group">
+        <label>Provider</label>
+        <select id="setProvider" onchange="onProviderPicked()"
+                style="width:100%;background:var(--surface-2);border:1px solid var(--border);color:var(--text);font-family:var(--sans);font-size:0.9rem;padding:0.65rem;border-radius:6px">
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Model</label>
+        <input type="text" id="setModel" placeholder="leave blank for the provider default">
+        <div class="trash-reason" id="setModelHint" style="margin-top:0.4rem"></div>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveProvider()">Save Provider</button>
+      <span id="setProviderStatus" class="trash-reason" style="margin-left:0.75rem"></span>
+    </div>
+
+    <!-- API keys -->
+    <div class="poster-section">
+      <h3>API Keys</h3>
+      <div class="trash-reason" style="margin-bottom:1rem">
+        Keys are stored in your Mac's Keychain, never in a file in this project.
+        Once saved, a key can never be read back here: you will only ever see
+        its last four characters. To replace one, paste a new key over it.
+      </div>
+
+      <div id="setKeyList"></div>
+
+      <div class="form-group" style="margin-top:1.25rem">
+        <label>Paste a key for the selected provider</label>
+        <input type="password" id="setApiKey" placeholder="paste key, then Save Key" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
+      <span id="setKeyStatus" class="trash-reason" style="margin-left:0.75rem"></span>
+    </div>
+
+  </div><!-- end mode-settings -->
 
 </div>
 
@@ -2476,6 +2534,108 @@ function switchMode(mode) {
   if (mode === 'scheduler') {
     loadScheduler();
   }
+  if (mode === 'settings') {
+    loadSettings();
+  }
+}
+
+// ─── Settings: provider + API keys ──────────────────────
+// The API key is write-only in this UI by design. Nothing here ever holds a
+// whole key: the server returns only a "set / source / last4" summary, and the
+// input field is cleared the moment a key is saved.
+
+let SETTINGS_PROVIDERS = [];
+
+async function loadSettings() {
+  const catalogue = await fetch('/api/settings/providers').then(r => r.json());
+  SETTINGS_PROVIDERS = catalogue.providers || [];
+
+  const select = document.getElementById('setProvider');
+  select.innerHTML = SETTINGS_PROVIDERS
+    .map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+
+  document.getElementById('setKeyList').innerHTML = SETTINGS_PROVIDERS.map(p => {
+    const k = p.key || {};
+    const label = k.set
+      ? `<span style="color:var(--green)">set</span> · …${k.last4} · from ${k.source}`
+      : `<span style="color:var(--text-muted)">not set</span> · or export ${p.env_var}`;
+    const clear = k.set && k.source === 'keyring'
+      ? `<button class="btn" onclick="clearApiKey('${p.name}')">Forget</button>` : '';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;
+                        padding:0.5rem 0;border-bottom:1px solid var(--border)">
+              <div><strong>${p.name}</strong><div class="trash-reason">${label}</div></div>
+              <div>${clear}</div>
+            </div>`;
+  }).join('');
+
+  if (!catalogue.credential_store_available) {
+    document.getElementById('setKeyStatus').textContent =
+      'No Keychain available — use the environment variables instead.';
+  }
+
+  // Show the default-model hint from the catalogue alone, before we know which
+  // profile is selected. Without this the hint stays blank whenever there is no
+  // profile yet, which is exactly when a new user is first reading this screen.
+  onProviderPicked();
+
+  if (!currentProfile) return;
+  const current = await fetch(`/api/profiles/${currentProfile}/provider`).then(r => r.json());
+  if (current.error) {
+    document.getElementById('setProviderStatus').textContent = current.error;
+    return;
+  }
+  select.value = current.provider;
+  document.getElementById('setModel').value = current.model || '';
+  onProviderPicked();
+}
+
+function onProviderPicked() {
+  const name = document.getElementById('setProvider').value;
+  const p = SETTINGS_PROVIDERS.find(x => x.name === name);
+  document.getElementById('setModelHint').textContent =
+    p ? `Default: ${p.default_model}` : '';
+}
+
+async function saveProvider() {
+  if (!currentProfile) { alert('Pick a profile first'); return; }
+  const body = {
+    provider: document.getElementById('setProvider').value,
+    model: document.getElementById('setModel').value.trim(),
+  };
+  const resp = await fetch(`/api/profiles/${currentProfile}/provider`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  document.getElementById('setProviderStatus').textContent =
+    resp.ok ? `Saved: ${data.provider} / ${data.model}` : (data.error || 'Failed');
+  if (resp.ok) document.getElementById('setModel').value = data.model;
+}
+
+async function saveApiKey() {
+  const field = document.getElementById('setApiKey');
+  const provider = document.getElementById('setProvider').value;
+  if (!field.value.trim()) { alert('Paste a key first'); return; }
+
+  const resp = await fetch('/api/settings/api-key', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider: provider, api_key: field.value}),
+  });
+  const data = await resp.json();
+  // Clear the field either way, so a rejected key is not left sitting in the DOM.
+  field.value = '';
+  document.getElementById('setKeyStatus').textContent =
+    resp.ok ? `Saved for ${provider} (…${data.key.last4})` : (data.error || 'Failed');
+  if (resp.ok) loadSettings();
+}
+
+async function clearApiKey(provider) {
+  if (!confirm(`Forget the stored ${provider} API key?`)) return;
+  await fetch(`/api/settings/api-key/${provider}`, {method: 'DELETE'});
+  document.getElementById('setKeyStatus').textContent = `Cleared ${provider}`;
+  loadSettings();
 }
 
 // ─── Scheduler ──────────────────────────────────────────

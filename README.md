@@ -384,6 +384,37 @@ uv run python tools/connector_dump.py "<people-search-url>" --profile <name>   #
 - Comments use GPT-4o-mini for cost efficiency
 - All tracking files prevent duplicate actions (won't repost or regenerate)
 
+## Choosing an AI provider
+
+Comment and post generation runs through whichever provider the profile is
+configured for. Set it in the dashboard's **Settings** tab: pick a provider,
+optionally override the model, and paste an API key.
+
+| Provider | Default model | Env var (fallback) |
+|---|---|---|
+| OpenAI (default) | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` |
+| xAI | `grok-4` | `XAI_API_KEY` |
+
+Switching provider takes effect on the next generation run. It does not touch
+your persona, tone, or voice settings, and it needs no code change or restart.
+
+**API keys go to the OS credential store** (Keychain on macOS), not to
+`.env` and not to `profiles.json`. The Settings screen is write-only: once a
+key is saved it can never be read back through the UI, which shows only whether
+a key is set and its last four characters. The environment variables above
+remain supported as a fallback for installs without a credential store; a
+stored key takes precedence over one in the environment.
+
+Anthropic's default is Haiku deliberately. This workload is short-form
+generation and yes/no relevance scoring, and never needs Opus-depth reasoning.
+
+One wrinkle worth knowing if you change the Anthropic model: Anthropic's
+5-series and Opus 4.7+ reject the `temperature` parameter, which this project
+varies deliberately to keep comments from sounding identical. The adapter
+detects those models and omits it rather than failing the call, so they work,
+but comment variety is flatter on them than on Haiku 4.5.
+
 ## Dashboard binding and debug mode
 
 The dashboard binds **`127.0.0.1` only**, and Flask debug mode is **off**.

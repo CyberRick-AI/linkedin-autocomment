@@ -37,8 +37,9 @@ try:
 except Exception:
     pass
 
-from openai import OpenAI
 from dotenv import load_dotenv
+
+from . import providers
 
 load_dotenv()
 
@@ -211,21 +212,29 @@ class PostQueue:
 # ─── Post Generator ──────────────────────────────────────────────────────────
 
 class PostGenerator:
-    """Generate LinkedIn posts using OpenAI."""
+    """Generate LinkedIn posts through the configured provider."""
 
-    def __init__(self, profile_name: str = None, model: str = "gpt-4o-mini"):
-        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        self.model = model
+    def __init__(self, profile_name: str = None, model: str = None):
         self.queue = PostQueue(profile_name)
         self.profile_name = profile_name
 
         # Per-profile post_generator config; falls back to hardcoded defaults.
+        config = {}
         pg = {}
         if HAS_PM:
             try:
-                pg = pm.get_profile_config(profile_name).get("post_generator", {}) or {}
+                config = pm.get_profile_config(profile_name) or {}
+                pg = config.get("post_generator", {}) or {}
             except Exception:
                 logger.debug("Could not load post_generator config; using defaults", exc_info=True)
+
+        # Provider and model are configuration (ROADMAP Phase 8). Resolved
+        # here, at construction, so a bad provider name fails before the first
+        # post is queued rather than partway through a run.
+        self.provider_name, configured_model = providers.resolve_provider_config(config)
+        self.model = model or configured_model
+        self.provider = providers.get_provider(self.provider_name)
+
         self.pg_persona = pg.get("persona") or DEFAULT_PERSONA
         self.pg_tone = pg.get("tone") or ""
         self.pg_voice = pg.get("voice") or ""
@@ -286,17 +295,15 @@ Write ONLY the post text, nothing else."""
 
         logger.info(f"Generating {style} post about: {topic[:60]}...")
 
-        response = self.client.chat.completions.create(
+        completion = self.provider.complete(
             model=self.model,
-            messages=[
-                {"role": "system", "content": self._build_system_prompt()},
-                {"role": "user", "content": prompt}
-            ],
+            system=self._build_system_prompt(),
+            user=prompt,
             temperature=0.9,
             max_tokens=500,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = completion.text
         # Clean up any quotes the model might wrap it in
         if text.startswith('"') and text.endswith('"'):
             text = text[1:-1]
@@ -350,17 +357,15 @@ Length: {length_instruction}"""
 
         logger.info("Generating article reaction post...")
 
-        response = self.client.chat.completions.create(
+        completion = self.provider.complete(
             model=self.model,
-            messages=[
-                {"role": "system", "content": self._build_system_prompt(article=True)},
-                {"role": "user", "content": prompt}
-            ],
+            system=self._build_system_prompt(article=True),
+            user=prompt,
             temperature=0.85,
             max_tokens=500,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = completion.text
         if text.startswith('"') and text.endswith('"'):
             text = text[1:-1]
 

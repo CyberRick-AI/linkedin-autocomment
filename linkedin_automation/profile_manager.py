@@ -202,6 +202,82 @@ def delete_profile_password(name: str):
         logger.debug("No keyring entry to delete for '%s'", name, exc_info=True)
 
 
+# ─── Generation-provider API keys (ROADMAP Phase 8) ───────────────────────────
+#
+# A separate keyring service from LINKEDIN credentials, deliberately. Both are
+# keyed by a short string, and LinkedIn entries are keyed by profile name: a
+# profile called "openai" would otherwise collide with the OpenAI API key and
+# one would overwrite the other.
+
+API_KEY_SERVICE = "linkedin-autocomment-api-keys"
+
+
+def set_api_key(provider: str, api_key: str) -> str:
+    """Store a provider's API key in the OS credential store.
+
+    Returns ``LOCATION_KEYRING`` on success. Unlike LinkedIn passwords there is
+    no in-file fallback: an API key must never land in ``profiles.json``. When
+    no credential store is available this raises, and the caller tells the user
+    to use the environment variable instead.
+    """
+    if not api_key or not api_key.strip():
+        raise ValueError("API key is empty")
+
+    if not keyring_available():
+        raise RuntimeError(
+            "No OS credential store is available, so the API key was not "
+            "saved. Set the provider's environment variable in .env instead."
+        )
+
+    keyring.set_password(API_KEY_SERVICE, provider, api_key.strip())
+    return LOCATION_KEYRING
+
+
+def get_api_key(provider: str) -> str:
+    """Return a provider's stored API key, or '' when there is none."""
+    if not keyring_available():
+        return ""
+    try:
+        return keyring.get_password(API_KEY_SERVICE, provider) or ""
+    except Exception as e:
+        logger.error("Could not read the API key for '%s': %s", provider, e)
+        return ""
+
+
+def delete_api_key(provider: str):
+    """Remove a provider's API key from the OS credential store."""
+    if not keyring_available():
+        return
+    try:
+        keyring.delete_password(API_KEY_SERVICE, provider)
+    except Exception:
+        logger.debug("No stored API key to delete for '%s'", provider, exc_info=True)
+
+
+def api_key_status(provider: str) -> Dict:
+    """Describe whether a key is set, without revealing it.
+
+    Returns ``{"set", "source", "last4"}``. ``last4`` is the last four
+    characters and is the *only* part of the value that ever leaves this
+    function, which is what lets the Settings screen confirm which key is
+    installed without the key being readable from the UI or a response body.
+    """
+    from . import providers
+
+    key = get_api_key(provider)
+    source = LOCATION_KEYRING
+
+    if not key:
+        env_name = providers.API_KEY_ENV.get(provider, "")
+        key = os.environ.get(env_name, "").strip() if env_name else ""
+        source = "env" if key else None
+
+    if not key:
+        return {"set": False, "source": None, "last4": ""}
+
+    return {"set": True, "source": source, "last4": key[-4:]}
+
+
 def migrate_passwords_to_keyring() -> Tuple[int, int]:
     """Move any in-file passwords into the OS credential store.
 

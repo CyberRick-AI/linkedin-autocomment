@@ -26,6 +26,7 @@ from .comment_fields import normalize_comment_fields, comments_to_txt
 # own load_dotenv) is intentional and order-independent.
 from . import profile_manager as pm
 from . import post_store
+from . import providers
 from . import scheduler as scheduler_mod
 
 load_dotenv()
@@ -488,6 +489,133 @@ def update_profile_config_route(name):
 def reset_profile_config_route(name):
     """POST /api/profiles/<name>/config/reset — regenerate the config from defaults."""
     return jsonify({"ok": True, "config": pm.reset_profile_config(name)})
+
+
+# ─── API: Settings (generation provider) ──────────────────────────────────────
+#
+# The API key is write-only across this whole section. A GET never returns it,
+# and the only part of a stored key that ever leaves the process is its last
+# four characters, which is enough to confirm *which* key is installed and not
+# enough to use it. See ROADMAP Phase 8.
+
+@app.route('/api/settings/providers', methods=['GET'])
+def get_providers_route():
+    """GET /api/settings/providers — the provider catalogue plus key status.
+
+    Drives the Settings screen's dropdown. ``key`` per provider reports whether
+    a key is set, where it came from, and its last four characters only.
+    """
+    return jsonify({
+        "providers": [
+            {
+                "name": name,
+                "default_model": providers.DEFAULT_MODELS[name],
+                "env_var": providers.API_KEY_ENV[name],
+                "key": pm.api_key_status(name),
+            }
+            for name in providers.PROVIDERS
+        ],
+        "default_provider": providers.DEFAULT_PROVIDER,
+        "credential_store_available": pm.keyring_available(),
+    })
+
+
+@app.route('/api/profiles/<name>/provider', methods=['GET'])
+def get_profile_provider_route(name):
+    """GET /api/profiles/<name>/provider — this profile's provider and model."""
+    try:
+        provider, model = providers.resolve_provider_config(pm.get_profile_config(name))
+    except providers.ProviderError as e:
+        # A config saved with a bad provider name. Report it rather than
+        # papering over it with the default, so the user can see what to fix.
+        return jsonify({"error": str(e)}), 400
+    return jsonify({
+        "provider": provider,
+        "model": model,
+        "key": pm.api_key_status(provider),
+    })
+
+
+@app.route('/api/profiles/<name>/provider', methods=['POST'])
+def set_profile_provider_route(name):
+    """POST /api/profiles/<name>/provider — set this profile's provider/model.
+
+    Body: ``{"provider": "openai"|"anthropic"|"xai", "model": "<optional>"}``.
+
+    Writes only the ``provider`` block, so persona, tone, and voice are left
+    untouched — changing where the text is generated must not change the voice
+    it is generated in.
+    """
+    body = request.json if request.is_json else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    provider = (body.get("provider") or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    model = body.get("model")
+    if model is not None and not isinstance(model, str):
+        return jsonify({"error": "model must be a string"}), 400
+    model = (model or "").strip() or providers.DEFAULT_MODELS[provider]
+
+    config = pm.get_profile_config(name)
+    config["provider"] = {"name": provider, "model": model}
+    pm.save_profile_config(name, config)
+
+    return jsonify({
+        "ok": True,
+        "provider": provider,
+        "model": model,
+        "key": pm.api_key_status(provider),
+    })
+
+
+@app.route('/api/settings/api-key', methods=['POST'])
+def set_api_key_route():
+    """POST /api/settings/api-key — store a provider's API key in the OS store.
+
+    Body: ``{"provider": "...", "api_key": "..."}``.
+
+    The key goes to the credential store, never to ``profiles.json`` and never
+    to ``.env``. The response echoes only the last four characters.
+    """
+    body = request.json if request.is_json else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    provider = (body.get("provider") or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    api_key = body.get("api_key")
+    if not isinstance(api_key, str) or not api_key.strip():
+        return jsonify({"error": "api_key is required and must be a non-empty string"}), 400
+
+    try:
+        pm.set_api_key(provider, api_key)
+    except RuntimeError as e:
+        # No OS credential store. Actionable, and deliberately not a 500.
+        return jsonify({"error": str(e)}), 409
+
+    return jsonify({"ok": True, "provider": provider, "key": pm.api_key_status(provider)})
+
+
+@app.route('/api/settings/api-key/<provider>', methods=['DELETE'])
+def delete_api_key_route(provider):
+    """DELETE /api/settings/api-key/<provider> — forget a stored API key."""
+    provider = (provider or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    pm.delete_api_key(provider)
+    return jsonify({"ok": True, "provider": provider, "key": pm.api_key_status(provider)})
 
 
 # ─── API: Posts ───────────────────────────────────────────────────────────────

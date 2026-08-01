@@ -1,10 +1,12 @@
 """Tests for post generator reading per-profile config (post-generator-config).
 
-Offline: OpenAI client + pm dirs/config are monkeypatched; no API calls."""
+Offline: the provider + pm dirs/config are monkeypatched; no API calls. Mocking
+at the provider boundary keeps these tests provider-agnostic."""
 
 import pytest
 
 from linkedin_automation import profile_manager as pm
+from linkedin_automation import providers
 from linkedin_automation import post_generator as g
 from linkedin_automation import human_behavior as hb
 
@@ -12,7 +14,7 @@ from linkedin_automation import human_behavior as hb
 @pytest.fixture
 def make_gen(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "get_data_dir", lambda profile_name=None, subdir=None: str(tmp_path))
-    monkeypatch.setattr(g, "OpenAI", lambda **k: object())
+    monkeypatch.setattr(providers, "get_provider", lambda name, api_key=None: object())
 
     def _make(config):
         monkeypatch.setattr(pm, "get_profile_config", lambda profile_name=None: config)
