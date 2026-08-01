@@ -1,0 +1,44 @@
+name: CI
+
+# Windows is the reference runtime and macOS is now supported, so both are
+# tested on every change. Nothing here needs a browser, a network, or a real
+# OpenAI key: the suite mocks every external edge.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report every cell. A macOS-only or Windows-only failure is exactly the
+      # kind of thing this matrix exists to surface, so one red cell must not
+      # cancel the others.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Create the project environment
+        run: uv venv --python ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          # The OpenAI client is constructed at import time, so the suite needs
+          # a key present but never uses it. Deliberately a fake value: no real
+          # secret belongs in CI for a suite that makes no API calls.
+          OPENAI_API_KEY: sk-dummy-for-ci-no-calls-are-made
+        run: uv run pytest tests/ -q
+
+      - name: Lint
+        run: uv run ruff check .
