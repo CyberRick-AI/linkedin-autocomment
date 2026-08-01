@@ -56,6 +56,56 @@ class LinkedInCommentPoster:
         "div[data-urn*='activity']",
     ]
 
+    # ─── Posting-path selectors (ROADMAP Phase 11, AUDIT G3) ──────────────────
+    #
+    # These were inline literals inside the methods below. That is exactly why
+    # selector_health could not cover the posting path: its registry is built
+    # from class constants so it stays in sync with what the code actually uses,
+    # and a literal buried in a method body is invisible to it.
+    #
+    # Observed 2026-07-31: a run placed zero of three comments and the health
+    # check reported HEALTHY minutes later, because its registry held only feed
+    # scraping selectors. A monitor that does not cover the risky path turns a
+    # loud failure into a confident all-clear. Hoisting these is what lets the
+    # monitor see the path most likely to break.
+
+    LIKE_BUTTON_SELECTORS = [
+        "button[aria-label*='Like'][aria-pressed='false']",
+        "button.react-button__trigger:not(.react-button__trigger--active)",
+        "button[data-control-name='like_toggle']",
+    ]
+
+    LIKED_STATE_SELECTORS = [
+        "button[aria-label*='Like'][aria-pressed='true']",
+        "button.react-button__trigger--active",
+    ]
+
+    # The action-bar button that OPENS the comment box. Distinct from the submit
+    # button below, which is the trap that broke posting on 2026-07-31.
+    COMMENT_BUTTON_LABEL_SELECTORS = [
+        "button[aria-label*='Comment']",
+        "button[aria-label*='comment']",
+    ]
+    COMMENT_BUTTON_TEXT_SELECTOR = "span.artdeco-button__text"
+    COMMENT_BUTTON_TEXT = "Comment"
+
+    # The editor itself. Only present after the comment box has been opened.
+    COMMENT_INPUT_SELECTORS = [
+        "div.ql-editor[contenteditable='true']",
+        "div.ql-editor.ql-blank",
+        "div[role='textbox'][contenteditable='true']",
+        "div[contenteditable='true'][data-placeholder*='comment']",
+    ]
+
+    # The SUBMIT button. LinkedIn labels it with the visible text "Comment" and
+    # no aria-label, while the action-bar button that opens the box carries
+    # aria-label="Comment" and shows the comment count as its text. Matching on
+    # exact visible text and excluding that aria-label is what separates them.
+    # Class-based selectors are deliberately avoided: LinkedIn ships hashed
+    # class names that change between deploys.
+    SUBMIT_BUTTON_XPATH = "//button[normalize-space(.)='Comment']"
+    SUBMIT_BUTTON_EXCLUDED_ARIA_LABEL = "Comment"
+
 
     def __init__(self, profile_name=None):
         self.profile_name = profile_name
@@ -219,12 +269,8 @@ class LinkedInCommentPoster:
         """Like the current post."""
         try:
             # Find the like button - multiple possible selectors
-            like_selectors = [
-                "button[aria-label*='Like'][aria-pressed='false']",
-                "button.react-button__trigger:not(.react-button__trigger--active)",
-                "button[data-control-name='like_toggle']"
-            ]
-            
+            like_selectors = self.LIKE_BUTTON_SELECTORS
+
             like_button = None
             for selector in like_selectors:
                 try:
@@ -237,11 +283,8 @@ class LinkedInCommentPoster:
 
             if not like_button:
                 # Check if already liked
-                liked_selectors = [
-                    "button[aria-label*='Like'][aria-pressed='true']",
-                    "button.react-button__trigger--active"
-                ]
-                
+                liked_selectors = self.LIKED_STATE_SELECTORS
+
                 for selector in liked_selectors:
                     if self.driver.find_elements(By.CSS_SELECTOR, selector):
                         self.logger.info("Post already liked")
@@ -270,9 +313,10 @@ class LinkedInCommentPoster:
         
         # Method 1: Find by span text
         try:
-            spans = self.driver.find_elements(By.CSS_SELECTOR, "span.artdeco-button__text")
+            spans = self.driver.find_elements(
+                By.CSS_SELECTOR, self.COMMENT_BUTTON_TEXT_SELECTOR)
             for span in spans:
-                if span.text.strip() == "Comment":
+                if span.text.strip() == self.COMMENT_BUTTON_TEXT:
                     # Get the parent button
                     comment_button = span.find_element(By.XPATH, "./ancestor::button")
                     break
@@ -281,11 +325,8 @@ class LinkedInCommentPoster:
 
         # Method 2: Try aria-label
         if not comment_button:
-            comment_button_selectors = [
-                "button[aria-label*='Comment']",
-                "button[aria-label*='comment']"
-            ]
-            
+            comment_button_selectors = self.COMMENT_BUTTON_LABEL_SELECTORS
+
             for selector in comment_button_selectors:
                 try:
                     buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
@@ -307,13 +348,8 @@ class LinkedInCommentPoster:
             self.logger.info("Comment button not found, trying to find comment box directly")
         
         # Find the comment input field
-        comment_input_selectors = [
-            "div.ql-editor[contenteditable='true']",
-            "div.ql-editor.ql-blank",
-            "div[role='textbox'][contenteditable='true']",
-            "div[contenteditable='true'][data-placeholder*='comment']"
-        ]
-        
+        comment_input_selectors = self.COMMENT_INPUT_SELECTORS
+
         comment_input = None
         for selector in comment_input_selectors:
             elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
@@ -371,14 +407,13 @@ class LinkedInCommentPoster:
         Class based selectors are deliberately not used: LinkedIn now ships
         hashed class names that change between deploys.
         """
-        buttons = self.driver.find_elements(
-            By.XPATH, "//button[normalize-space(.)='Comment']"
-        )
+        buttons = self.driver.find_elements(By.XPATH, self.SUBMIT_BUTTON_XPATH)
         candidates = [
             b for b in buttons
             if b.is_displayed()
             and b.is_enabled()
-            and (b.get_attribute("aria-label") or "") != "Comment"
+            and (b.get_attribute("aria-label") or "")
+            != self.SUBMIT_BUTTON_EXCLUDED_ARIA_LABEL
         ]
         # The submit button sits below the editor, after the action bar in DOM
         # order, so prefer the last match.

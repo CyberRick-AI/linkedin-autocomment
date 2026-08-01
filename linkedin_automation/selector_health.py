@@ -27,6 +27,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from . import profile_manager as pm
 from .post_finder import LinkedInScraper
 from .auto_connector import LinkedInAutoConnector
+from .comment_poster import LinkedInCommentPoster
 from .failure_capture import capture_failure
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,62 @@ SELECTOR_REGISTRY: Dict[str, Dict] = {
         "min_expected": 0, "critical": False, "page": "search",
         "fix_symbol": "LinkedInAutoConnector.INTEROP_OUTLET_SELECTOR",
         "note": "shadow-DOM host for the connect dialog; only present mid-connect",
+    },
+
+    # ─── Posting path (ROADMAP Phase 11, closes AUDIT G3) ─────────────────────
+    #
+    # Observed 2026-07-31: a posting run placed zero of three comments, and this
+    # health check reported HEALTHY minutes afterwards. Its registry held only
+    # feed-scraping selectors, so it gave a green light on the path least likely
+    # to be the problem while ignoring the one that had just failed. Posting is
+    # the highest-consequence action in the project and it had no coverage.
+    #
+    # These live on a post PERMALINK page (page="post"), not the feed. Two of
+    # them are interaction-gated and cannot be counted by a passive page load;
+    # they are marked so the report says "not checked" rather than implying a
+    # clean result. Claiming a green on something never tested is the exact
+    # failure this section exists to fix.
+    "post_detail": {
+        "selectors": list(LinkedInCommentPoster.POST_DETAIL_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "post",
+        "fix_symbol": "LinkedInCommentPoster.POST_DETAIL_SELECTORS",
+        "note": ("proves the permalink page rendered; the 2026-07-31 break was "
+                 "here, when LinkedIn moved to data-testid and the legacy "
+                 "selectors stopped matching"),
+    },
+    "post_like_button": {
+        "selectors": list(LinkedInCommentPoster.LIKE_BUTTON_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "post",
+        "fix_symbol": "LinkedInCommentPoster.LIKE_BUTTON_SELECTORS",
+        "note": ("absent when the post is already liked, which is why this is "
+                 "non-critical: a zero here is ambiguous, not broken"),
+    },
+    "post_comment_button": {
+        "selectors": list(LinkedInCommentPoster.COMMENT_BUTTON_LABEL_SELECTORS)
+        + [LinkedInCommentPoster.COMMENT_BUTTON_TEXT_SELECTOR],
+        "min_expected": 1, "critical": True, "page": "post",
+        "fix_symbol": ("LinkedInCommentPoster.COMMENT_BUTTON_LABEL_SELECTORS / "
+                       "COMMENT_BUTTON_TEXT_SELECTOR"),
+        "note": "the action-bar button that opens the comment box",
+    },
+    "post_comment_input": {
+        "selectors": list(LinkedInCommentPoster.COMMENT_INPUT_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "post",
+        "requires_interaction": True,
+        "fix_symbol": "LinkedInCommentPoster.COMMENT_INPUT_SELECTORS",
+        "note": ("the editor itself; only exists after the comment button is "
+                 "clicked, so a passive page check cannot count it"),
+    },
+    "post_submit_button": {
+        "selectors": [LinkedInCommentPoster.SUBMIT_BUTTON_XPATH],
+        "min_expected": 1, "critical": True, "page": "post",
+        "requires_interaction": True, "xpath": True,
+        "fix_symbol": "LinkedInCommentPoster.SUBMIT_BUTTON_XPATH",
+        "note": ("matched by visible text 'Comment', excluding aria-label="
+                 "'Comment' which is the button that OPENS the box. That "
+                 "collision is what broke posting on 2026-07-31: a guard "
+                 "skipped any button labelled 'Comment' and so skipped the "
+                 "submit button itself"),
     },
 }
 
