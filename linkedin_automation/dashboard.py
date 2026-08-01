@@ -264,7 +264,8 @@ def _scrape_job(job_id, profile_name, max_posts, min_quality):
 
     if returncode == pm.EXIT_LOGIN_REQUIRED:
         raise pm.LoginRequiredError(
-            f"Login required. Run: python tools/login_check.py --profile {profile_name}"
+            f"Login required. Press \"Log in\" in the dashboard header, or run: "
+            f"python tools/login_check.py --profile {profile_name}"
         )
     if returncode != 0:
         raise RuntimeError(f"Post finder exited with code {returncode}")
@@ -293,7 +294,8 @@ def _post_comments_job(job_id, profile_name, comments_file, count):
 
     if returncode == pm.EXIT_LOGIN_REQUIRED:
         raise pm.LoginRequiredError(
-            f"Login required. Run: python tools/login_check.py --profile {profile_name}"
+            f"Login required. Press \"Log in\" in the dashboard header, or run: "
+            f"python tools/login_check.py --profile {profile_name}"
         )
     if returncode != 0:
         raise RuntimeError(f"Comment poster exited with code {returncode}")
@@ -1136,7 +1138,8 @@ def selector_health(profile_name):
 
         if returncode == pm.EXIT_LOGIN_REQUIRED:
             raise pm.LoginRequiredError(
-                f"Login required. Run: python tools/login_check.py --profile {pname}"
+                f"Login required. Press \"Log in\" in the dashboard header, or run: "
+                f"python tools/login_check.py --profile {pname}"
             )
 
         # The script writes the structured result even when the status is BROKEN
@@ -1153,6 +1156,65 @@ def selector_health(profile_name):
         return jsonify({"error": f"A browser task is already running for {profile_name}. Wait for it to finish."}), 409
     run_job(job_id, do_health, profile_name,
             profile=profile_name, task_type="browser", category="selector_health")
+    return jsonify({"job_id": job_id})
+
+
+# tools/ is a sibling of the package, not a module inside it.
+LOGIN_CHECK_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "login_check.py")
+
+
+@app.route('/api/profiles/<name>/login', methods=['POST'])
+def profile_login(name):
+    """POST /api/profiles/<name>/login — open Chrome and wait for a manual sign-in.
+
+    Body (optional): ``{"wait": false}`` to report the current status and exit
+    instead of waiting.
+
+    This is the one step that had no button, which is why it was the one step
+    that still needed a terminal. It runs ``tools/login_check.py``, which since
+    Phase 5b polls the browser rather than prompting on stdin — a subprocess
+    launched from here has no stdin at all, so the old bare ``input()`` would
+    have hung here exactly as it did everywhere else (finding B7).
+
+    **Rick types his password into LinkedIn's own page**, in the Chrome window
+    this opens. Nothing in this project ever types it for him on the way in.
+    """
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "Body must be a JSON object"}), 400
+    wait = body.get("wait", True)
+    if not isinstance(wait, bool):
+        return jsonify({"error": "'wait' must be true or false"}), 400
+
+    if name not in pm.load_profiles().get("profiles", {}):
+        return jsonify({"error": f"No profile named '{name}'"}), 404
+
+    job_id = f"login_{name}_{int(time.time())}"
+
+    def do_login(jid, pname):
+        cmd = [sys.executable, LOGIN_CHECK_SCRIPT, "--profile", pname]
+        if not wait:
+            cmd.append("--no-wait")
+        returncode, _ = run_subprocess(jid, cmd)
+
+        # login_check: 0 logged in, 1 error, 2 not logged in.
+        if returncode == pm.EXIT_OK:
+            return {"logged_in": True, "status": "LOGGED_IN",
+                    "message": f"Profile '{pname}' is signed in to LinkedIn. "
+                               f"Scrape, post and connect runs will reuse this session."}
+        if returncode == pm.EXIT_LOGIN_REQUIRED:
+            return {"logged_in": False, "status": "NOT_LOGGED_IN",
+                    "message": "Not signed in. The window timed out, or it was "
+                               "closed before the sign-in completed. Press Log in "
+                               "again — the session persists once it takes."}
+        return {"logged_in": False, "status": "ERROR",
+                "message": "The login check could not run. See the job log.",
+                "returncode": returncode}
+
+    if not can_start_browser_task(name):
+        return jsonify({"error": f"A browser task is already running for {name}. Wait for it to finish."}), 409
+    run_job(job_id, do_login, name, profile=name, task_type="browser", category="login")
     return jsonify({"job_id": job_id})
 
 
@@ -1275,7 +1337,8 @@ def start_connector(profile_name):
 
         if returncode == pm.EXIT_LOGIN_REQUIRED:
             raise pm.LoginRequiredError(
-                f"Login required. Run: python tools/login_check.py --profile {pname}"
+                f"Login required. Press \"Log in\" in the dashboard header, or run: "
+                f"python tools/login_check.py --profile {pname}"
             )
         if returncode != 0:
             raise RuntimeError(f"Auto-connector exited with code {returncode}")

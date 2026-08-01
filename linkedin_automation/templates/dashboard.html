@@ -993,6 +993,12 @@ header {
       <button class="btn-icon" onclick="openAddProfile()" title="Add profile">+</button>
       <button class="btn-icon" onclick="openConfigModal()" title="Edit profile config">⚙</button>
       <button class="btn-icon" onclick="setDefaultProfile()" title="Set as default profile">★</button>
+      <!-- Logging in was the one step in the whole flow with no button, which
+           is why it still needed a terminal. Everything else the operator does
+           has lived in this page for months. -->
+      <button class="btn btn-sm" id="loginBtn" onclick="startLogin()"
+              title="Open Chrome and sign in to LinkedIn">Log in</button>
+      <span id="loginBadge" class="cfg-badge" style="display:none"></span>
     </div>
   </header>
 
@@ -2723,6 +2729,81 @@ function renderSelectorReport(report) {
   out.push(`<div style="margin-top:0.5rem;font-size:0.72rem;color:var(--text-dim)">
       * critical. A red on a critical selector means that path fails with no error.</div>`);
   document.getElementById('selectorRows').innerHTML = out.join('');
+}
+
+// ─── Sign in to LinkedIn ────────────────────────────────
+//
+// The one step that had no button, and so the one step that still needed a
+// terminal. The window this opens is LinkedIn's own login page: the password
+// is typed there, by the operator, never by this project.
+
+async function startLogin() {
+  if (!currentProfile) return showToast('Select a profile first', 'error');
+  const btn = document.getElementById('loginBtn');
+  const badge = document.getElementById('loginBadge');
+
+  const ok = await askConfirm(
+    `Open Chrome and sign in to LinkedIn as "${currentProfile}"?\n\n` +
+    `A browser window opens on LinkedIn. Sign in there — nothing to press ` +
+    `afterwards, it detects it and closes on its own. Your password goes to ` +
+    `LinkedIn's own page, never through this app.`, 'Open Chrome');
+  if (!ok) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Waiting for sign-in…';
+  badge.style.display = 'none';
+  const finish = () => { btn.disabled = false; btn.innerHTML = 'Log in'; };
+
+  try {
+    const res = await fetch(`/api/profiles/${currentProfile}/login`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({wait: true}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.error || 'Could not start the login', 'error');
+      return finish();
+    }
+    const { job_id } = await res.json();
+    refreshActiveJobs();
+    showToast('Chrome is opening. Sign in there — this page will update itself.');
+
+    const iv = setInterval(async () => {
+      try {
+        const job = await (await fetch(`/api/jobs/${job_id}`)).json();
+        if (job.status === 'completed') {
+          clearInterval(iv);
+          renderLoginResult(job.result || {});
+          refreshActiveJobs();
+          finish();
+        } else if (job.status === 'failed') {
+          clearInterval(iv);
+          showToast('Login check failed: ' + (job.error || 'Unknown error'), 'error');
+          refreshActiveJobs();
+          finish();
+        }
+      } catch (e) {
+        clearInterval(iv);
+        showToast('Polling error: ' + e.message, 'error');
+        finish();
+      }
+    }, 3000);
+  } catch (e) {
+    showToast('Request failed: ' + e.message, 'error');
+    finish();
+  }
+}
+
+function renderLoginResult(result) {
+  const badge = document.getElementById('loginBadge');
+  const ok = !!result.logged_in;
+  badge.textContent = ok ? 'signed in' : (result.status || 'not signed in');
+  badge.style.background = ok ? 'var(--green)' : 'var(--yellow)';
+  badge.style.color = '#000';
+  badge.style.display = 'inline-block';
+  showToast(result.message || (ok ? 'Signed in.' : 'Not signed in.'),
+            ok ? 'success' : 'error');
 }
 
 // ─── Stored credential self-check ───────────────────────
