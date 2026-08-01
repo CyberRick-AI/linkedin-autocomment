@@ -32,7 +32,31 @@ load_dotenv()
 
 class LinkedInCommentPoster:
     """Post generated comments to LinkedIn posts."""
-    
+
+    # Selectors that prove a post permalink page has actually rendered, tried in
+    # order. Modern (data-testid / role) first, legacy class names kept as
+    # fallbacks for accounts still served the older layout.
+    #
+    # LinkedIn moved the permalink page to data-testid attributes. post_finder
+    # was updated for that; this list was not, so all four legacy selectors
+    # below stopped matching and every post failed with "Post content not found
+    # on page" after burning 4 x 20s of WebDriverWait. Verified against a live
+    # permalink page 2026-07-30: the four legacy selectors returned 0 matches,
+    # the two modern ones returned 1 each.
+    #
+    # Deliberately NOT using "main": it matches on every LinkedIn page,
+    # including error pages, so it would report success on a page that never
+    # loaded the post.
+    POST_DETAIL_SELECTORS = [
+        "span[data-testid='expandable-text-box']",
+        "div[role='listitem']",
+        "div.occludable-update",
+        "div.feed-shared-update-v2",
+        "article.feed-shared-article",
+        "div[data-urn*='activity']",
+    ]
+
+
     def __init__(self, profile_name=None):
         self.profile_name = profile_name
         self.profile = None  # Set during setup_driver
@@ -151,12 +175,7 @@ class LinkedInCommentPoster:
             hb.human_sleep(2.5, 4.0)
 
             # Wait for post content to be visible
-            post_selectors = [
-                "div.occludable-update",
-                "div.feed-shared-update-v2",
-                "article.feed-shared-article",
-                "div[data-urn*='activity']"
-            ]
+            post_selectors = self.POST_DETAIL_SELECTORS
             
             post_found = False
             for selector in post_selectors:
@@ -341,11 +360,38 @@ class LinkedInCommentPoster:
             self.logger.error(f"Verification error: {e}")
             return False
     
+    def find_submit_button(self):
+        """Return the comment box's submit button, or None.
+
+        LinkedIn labels it with the visible text "Comment" and no aria-label.
+        The action bar button that *opens* the box also relates to commenting,
+        but carries aria-label="Comment" and shows the comment count as its
+        text ("39"), so matching on exact visible text separates them.
+
+        Class based selectors are deliberately not used: LinkedIn now ships
+        hashed class names that change between deploys.
+        """
+        buttons = self.driver.find_elements(
+            By.XPATH, "//button[normalize-space(.)='Comment']"
+        )
+        candidates = [
+            b for b in buttons
+            if b.is_displayed()
+            and b.is_enabled()
+            and (b.get_attribute("aria-label") or "") != "Comment"
+        ]
+        # The submit button sits below the editor, after the action bar in DOM
+        # order, so prefer the last match.
+        return candidates[-1] if candidates else None
+
     def post_comment_method1(self, comment_input, comment_text):
-        """Method 1: Direct selector from debug script."""
-        self.logger.info("Trying Method 1: Direct selector (button.comments-comment-box__submit-button--cr)")
+        """Method 1: click the submit button, located by its visible text."""
+        self.logger.info("Trying Method 1: submit button by visible text 'Comment'")
         try:
-            post_button = self.driver.find_element(By.CSS_SELECTOR, "button.comments-comment-box__submit-button--cr")
+            post_button = self.find_submit_button()
+            if post_button is None:
+                self.logger.debug("Method 1: no submit button matched")
+                return False
             self.logger.info(f"Found submit button: '{post_button.text}'")
             hb.human_click(self.driver, post_button)
             hb.human_sleep(2.5, 3.5)
@@ -446,7 +492,12 @@ class LinkedInCommentPoster:
                 for button in buttons:
                     if button.is_displayed() and button.is_enabled():
                         btn_text = button.text.strip()
-                        if btn_text != "Comment":  # Skip comment opener
+                        # Skip the action bar button that OPENS the box. It is
+                        # identified by aria-label="Comment", not by its text:
+                        # LinkedIn relabelled the submit button to "Comment",
+                        # so the old `btn_text != "Comment"` guard excluded the
+                        # very button this method needs to click.
+                        if (button.get_attribute("aria-label") or "") != "Comment":
                             self.logger.info(f"Found button with selector {selector}: '{btn_text}'")
                             hb.human_click(self.driver, button)
                             hb.human_sleep(2.5, 3.5)
