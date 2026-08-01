@@ -5,7 +5,6 @@ feed, score posts, and save the best ones as ``ai_posts_*.json`` for the comment
 generator. Exits 0 on success, 2 on login failure, 1 on other errors.
 """
 
-import json
 import os
 import re
 import sys
@@ -29,6 +28,7 @@ from . import human_behavior as hb
 from . import post_store
 from . import platform_compat
 from .failure_capture import capture_failure
+from . import atomic_io
 
 load_dotenv()
 
@@ -1356,8 +1356,7 @@ class LinkedInAIPostFinder:
         
         # Save
         output_file = os.path.join(self.output_dir, f'ai_posts_{timestamp}.json')
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
+        atomic_io.write_json_atomic(output_file, output)
 
         # Update the lifecycle store: quality posts → NEW, low-quality → TRASH
         # (low_quality), ads/job cards → TRASH (ad/job_card). The ai_posts file

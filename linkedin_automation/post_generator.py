@@ -40,6 +40,7 @@ except Exception:
 from dotenv import load_dotenv
 
 from . import providers
+from . import atomic_io
 
 load_dotenv()
 
@@ -148,12 +149,10 @@ class PostQueue:
         return default
 
     def _save_queue(self):
-        with open(self.queue_file, 'w', encoding='utf-8') as f:
-            json.dump(self.queue, f, indent=2, ensure_ascii=False)
+        atomic_io.write_json_atomic(self.queue_file, self.queue)
 
     def _save_history(self):
-        with open(self.history_file, 'w', encoding='utf-8') as f:
-            json.dump(self.history, f, indent=2, ensure_ascii=False)
+        atomic_io.write_json_atomic(self.history_file, self.history)
 
     def add(self, post: Dict):
         """Add a post to the queue."""

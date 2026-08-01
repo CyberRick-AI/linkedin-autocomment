@@ -16,12 +16,12 @@ Design contract (see .dev/VISION_AUDIT.md — recommended scope (b)):
 
 import os
 import re
-import json
 import logging
 from datetime import datetime
 from typing import Optional
 
 from . import profile_manager as pm
+from . import atomic_io
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +96,7 @@ def capture_failure(driver, label: str, profile_name: str = None,
 
         # ── Write the sidecar last so it references whatever succeeded above ──
         try:
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(context, f, indent=2, ensure_ascii=False)
+            atomic_io.write_json_atomic(json_path, context)
         except Exception:
             logger.debug("capture_failure: sidecar write failed", exc_info=True)
 

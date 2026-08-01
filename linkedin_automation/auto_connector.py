@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 from . import profile_manager as pm
 from . import human_behavior as hb
 from .failure_capture import capture_failure
+from . import atomic_io
 
 load_dotenv()
 
@@ -71,8 +72,10 @@ class ConnectionTracker:
 
     def save(self):
         """Persist the connection tracker data to disk."""
-        with open(self.tracker_file, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
+        # The daily and weekly caps live in this file. A truncated write
+        # loses the counts, which resets the limits that keep the account out
+        # of trouble, so it is written atomically.
+        atomic_io.write_json_atomic(self.tracker_file, self.data)
 
     def get_week_key(self) -> str:
         """Get ISO week key for tracking weekly limits."""
@@ -1483,8 +1486,7 @@ Examples:
     results_dir = pm.get_data_dir(resolved, "connections")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     results_file = os.path.join(results_dir, f"session_{timestamp}.json")
-    with open(results_file, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+    atomic_io.write_json_atomic(results_file, results)
     logger.info(f"Session results saved to: {results_file}")
 
 

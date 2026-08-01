@@ -30,6 +30,7 @@ from .post_finder import LinkedInScraper
 from .auto_connector import LinkedInAutoConnector
 from .comment_poster import LinkedInCommentPoster
 from .failure_capture import capture_failure
+from . import atomic_io
 
 logger = logging.getLogger(__name__)
 
@@ -743,8 +744,7 @@ def run_health_check(profile_name: str = None, scrolls: int = 3) -> Dict:
         # Persist the result for the dashboard endpoint to read.
         try:
             out_path = os.path.join(pm.get_data_dir(profile_name), HEALTH_RESULT_FILE)
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2)
+            atomic_io.write_json_atomic(out_path, result)
             result["result_file"] = out_path
         except Exception:
             logger.debug("Could not write selector_health.json", exc_info=True)
@@ -836,8 +836,7 @@ def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3
 
         try:
             out_path = os.path.join(pm.get_data_dir(profile_name), SEARCH_RESULT_FILE)
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2)
+            atomic_io.write_json_atomic(out_path, result)
             result["result_file"] = out_path
         except Exception:
             logger.debug(f"Could not write {SEARCH_RESULT_FILE}", exc_info=True)
@@ -904,8 +903,7 @@ def run_post_health_check(profile_name: str, post_url: str) -> Dict:
 
         try:
             out_path = os.path.join(pm.get_data_dir(profile_name), POST_RESULT_FILE)
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2)
+            atomic_io.write_json_atomic(out_path, result)
             result["result_file"] = out_path
         except Exception:
             logger.debug(f"Could not write {POST_RESULT_FILE}", exc_info=True)

@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from linkedin_automation import profile_manager as pm
+from linkedin_automation import atomic_io
 
 logging.basicConfig(
     level=logging.INFO,
@@ -191,8 +192,7 @@ class LinkedInWorkflowRunner:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         merged_file = os.path.join(self.timeline_dir, f'ai_posts_merged_{timestamp}.json')
         
-        with open(merged_file, 'w', encoding='utf-8') as f:
-            json.dump(merged_data, f, indent=2, ensure_ascii=False)
+        atomic_io.write_json_atomic(merged_file, merged_data)
         
         logger.info("✓ Merged files successfully")
         logger.info(f"  File 1: {data1.get('quality_found', 0)} quality posts")

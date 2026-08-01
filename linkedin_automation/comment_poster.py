@@ -7,7 +7,6 @@ single comment are skipped-and-logged so the run continues. Exits 0 on success,
 """
 
 import time
-import json
 import os
 import re
 import sys
@@ -26,6 +25,7 @@ from . import profile_manager as pm
 from . import human_behavior as hb
 from . import platform_compat
 from .failure_capture import capture_failure
+from . import atomic_io
 
 load_dotenv()
 
@@ -139,16 +139,75 @@ class LinkedInCommentPoster:
         self.progress = self.load_progress()
     
     def load_progress(self) -> Dict:
-        """Load posting progress from file."""
-        if os.path.exists(self.progress_file):
-            with open(self.progress_file, 'r') as f:
-                return json.load(f)
-        return {"posted_comments": []}
+        """Load posting progress, and surface anything left mid-flight.
+
+        A URL in ``in_flight`` means a previous run was interrupted between
+        submitting a comment and recording it. Whether it actually posted is
+        genuinely unknown, so it is moved to ``needs_review`` and named in the
+        log rather than guessed at in either direction.
+        """
+        progress = atomic_io.read_json(self.progress_file,
+                                       default={"posted_comments": []})
+        progress.setdefault("posted_comments", [])
+        progress.setdefault("in_flight", [])
+        progress.setdefault("needs_review", [])
+
+        stranded = [u for u in progress["in_flight"]
+                    if u not in progress["posted_comments"]]
+        if stranded:
+            for url in stranded:
+                if url not in progress["needs_review"]:
+                    progress["needs_review"].append(url)
+            progress["in_flight"] = []
+            self.logger.warning(
+                f"{len(stranded)} comment(s) were interrupted mid-post by a "
+                f"previous run. It is not known whether they reached LinkedIn, "
+                f"so they will be SKIPPED rather than risk a duplicate. Check "
+                f"each post, then re-run with --force to post any that did not "
+                f"land:"
+            )
+            for url in stranded:
+                self.logger.warning(f"  needs review: {url}")
+            # Written directly rather than via save_progress(): this runs from
+            # __init__, before self.progress exists.
+            atomic_io.write_json_atomic(self.progress_file, progress)
+        return progress
+
+    def is_unresolved(self, url: str) -> bool:
+        """True when a previous run left this URL in an unknown state.
+
+        Skipping is the safe default. A comment that failed to post can be
+        posted again by hand; a comment posted twice cannot be unposted.
+        """
+        return url in self.progress.get("needs_review", [])
+
+    def mark_in_flight(self, url: str):
+        """Record the intent to post BEFORE submitting.
+
+        Without this, a crash between LinkedIn accepting the comment and the
+        ledger being written leaves no trace, and the next run posts it again.
+        Atomic writes cannot close that window: the write is not what is
+        interrupted, the gap between two of them is.
+        """
+        if url not in self.progress["in_flight"]:
+            self.progress["in_flight"].append(url)
+            self.save_progress()
+
+    def clear_in_flight(self, url: str):
+        """Drop the intent record after a definite outcome, either way."""
+        if url in self.progress.get("in_flight", []):
+            self.progress["in_flight"].remove(url)
+            self.save_progress()
     
     def save_progress(self):
-        """Save posting progress to file."""
-        with open(self.progress_file, 'w') as f:
-            json.dump(self.progress, f, indent=2)
+        """Save posting progress to file, atomically.
+
+        This is the ledger of what has already been posted. A truncated write
+        loses that record, and the next run re-posts comments that are already
+        on somebody's post. It is the single most consequential write in the
+        project, which is why AUDIT C2 named it specifically.
+        """
+        atomic_io.write_json_atomic(self.progress_file, self.progress)
     
     def setup_driver(self):
         """Initialize Chrome driver with persistent session via profile manager."""
@@ -622,7 +681,18 @@ class LinkedInCommentPoster:
         if not force and url in self.progress.get('posted_comments', []):
             self.logger.info(f"Comment already posted for: {url}")
             return True
-        
+
+        # A previous run died between submitting this comment and recording it,
+        # so whether it posted is unknown. Refuse rather than guess: --force is
+        # the deliberate override once the post has been checked by eye.
+        if not force and self.is_unresolved(url):
+            self.logger.warning(
+                f"Skipping {url}: a previous run was interrupted mid-post and it "
+                f"is not known whether the comment landed. Check the post, then "
+                f"use --force if it did not."
+            )
+            return False
+
         self.logger.info(f"\n{'='*60}")
         self.logger.info(f"Processing comment for post: {comment_data['preview'][:80]}...")
         self.logger.info(f"Comment: {comment_text[:100]}...")
@@ -642,15 +712,22 @@ class LinkedInCommentPoster:
         # Variable pause between liking and opening the comment box.
         hb.human_sleep(0.8, 2.2)
 
+        # Record the intent BEFORE submitting. If the process dies in the window
+        # between LinkedIn accepting the comment and the ledger being written,
+        # this is the only evidence that the attempt happened at all.
+        self.mark_in_flight(url)
+
         # Post the comment
         if not self.post_comment(comment_text):
+            self.clear_in_flight(url)
             return False
-        
+
         # Mark as completed
         self.progress['posted_comments'].append(url)
         self.progress['last_posted'] = datetime.now().isoformat()
+        self.clear_in_flight(url)          # saves, so one write settles both
         self.save_progress()
-        
+
         self.logger.info("✅ Successfully engaged with post!")
 
         # Wait before next action (variable, not a flat 5s)
@@ -658,7 +735,8 @@ class LinkedInCommentPoster:
 
         return True
     
-    def run(self, comments_file: str, post_count: int = 1, manual_mode: bool = False):
+    def run(self, comments_file: str, post_count: int = 1, manual_mode: bool = False,
+            force: bool = False):
         """Run the comment posting process."""
         # Parse comments
         comments = self.parse_comments_file(comments_file)
@@ -707,8 +785,17 @@ class LinkedInCommentPoster:
                     skipped += 1
                     continue
 
-                if url in self.progress.get('posted_comments', []):
+                if not force and url in self.progress.get('posted_comments', []):
                     self.logger.info(f"Skipping comment {label}: already posted")
+                    continue
+
+                if not force and self.is_unresolved(url):
+                    self.logger.warning(
+                        f"Skipping comment {label}: a previous run was interrupted "
+                        f"mid-post on this URL, so whether it landed is unknown. "
+                        f"Check the post, then re-run with --force if it did not."
+                    )
+                    skipped += 1
                     continue
 
                 try:
@@ -728,7 +815,7 @@ class LinkedInCommentPoster:
                         self.save_progress()
                         posted += 1
 
-                    elif self.post_single_comment(comment):
+                    elif self.post_single_comment(comment, force=force):
                         posted += 1
                     else:
                         self.logger.warning(f"Skipping comment {label}: post attempt did not succeed")
@@ -780,6 +867,9 @@ def main():
     parser.add_argument('--count', type=int, default=1, help='Number of comments to post (default: 1)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--manual', action='store_true', help='Manual mode - shows instructions instead of automating')
+    parser.add_argument('--force', action='store_true',
+                        help='Post even when the ledger says already-posted or unresolved. '
+                             'Only after checking the post by eye: this is how a duplicate happens')
     parser.add_argument('--test-url', help='Test with a specific LinkedIn post URL')
     parser.add_argument('--test-comment', default='This is a test comment.', help='Comment text for test mode')
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name (uses default if omitted)')
@@ -820,7 +910,8 @@ def main():
         sys.exit(pm.EXIT_ERROR)
 
     try:
-        poster.run(args.comments_file, args.count, manual_mode=args.manual)
+        poster.run(args.comments_file, args.count, manual_mode=args.manual,
+                   force=args.force)
         sys.exit(pm.EXIT_OK)
     except pm.LoginRequiredError as e:
         print(f"\n❌ {e}")

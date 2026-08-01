@@ -26,6 +26,7 @@ from .comment_fields import normalize_comment_fields, comments_to_txt
 # own load_dotenv) is intentional and order-independent.
 from . import profile_manager as pm
 from . import post_store
+from . import atomic_io
 from . import providers
 from . import scheduler as scheduler_mod
 from . import selector_health as shc
@@ -783,8 +784,7 @@ def save_posts(profile_name):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     curated_file = os.path.join(timeline_dir, f'ai_posts_curated_{timestamp}.json')
     
-    with open(curated_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    atomic_io.write_json_atomic(curated_file, data)
     
     return jsonify({"ok": True, "file": curated_file, "count": len(posts)})
 
@@ -935,12 +935,11 @@ def _write_lifecycle_input(profile_name, records):
     timeline_dir = pm.get_timeline_dir(profile_name)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     path = os.path.join(timeline_dir, f'lifecycle_new_{ts}.json')
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump({
-            "source": "lifecycle_store",
-            "generated_at": datetime.now().isoformat(),
-            "quality_posts": quality_posts,
-        }, f, indent=2, ensure_ascii=False)
+    atomic_io.write_json_atomic(path, {
+        "source": "lifecycle_store",
+        "generated_at": datetime.now().isoformat(),
+        "quality_posts": quality_posts,
+    })
     return path, len(quality_posts)
 
 
@@ -1042,8 +1041,7 @@ def save_comments(profile_name):
         "curated": True,
         "comments": comments
     }
-    with open(json_file, 'w', encoding='utf-8') as f:
-        json.dump(json_data, f, indent=2, ensure_ascii=False)
+    atomic_io.write_json_atomic(json_file, json_data)
     
     # Save TXT for the poster script (canonical format owned by comment_fields)
     txt_file = os.path.join(comments_dir, f'daily_comments_curated_{timestamp}.txt')

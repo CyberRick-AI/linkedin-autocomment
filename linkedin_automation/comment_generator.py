@@ -29,6 +29,7 @@ import logging
 import random
 
 from . import providers
+from . import atomic_io
 
 load_dotenv()
 
@@ -919,13 +920,12 @@ Write ONLY the comment text:"""
         
         # JSON
         json_file = os.path.join(self.output_dir, f'comments_{timestamp}.json')
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'generated': datetime.now().isoformat(),
-                'total': len(results),
-                'already_posted_urls_skipped': len(self.posted_urls),
-                'comments': results
-            }, f, indent=2, ensure_ascii=False)
+        atomic_io.write_json_atomic(json_file, {
+            'generated': datetime.now().isoformat(),
+            'total': len(results),
+            'already_posted_urls_skipped': len(self.posted_urls),
+            'comments': results
+        })
         
         # Text file
         text_file = os.path.join(self.output_dir, f'daily_comments_{timestamp}.txt')
