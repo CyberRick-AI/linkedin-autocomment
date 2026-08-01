@@ -24,6 +24,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 
+from . import dom_probe
 from . import profile_manager as pm
 from .post_finder import LinkedInScraper
 from .auto_connector import LinkedInAutoConnector
@@ -35,6 +36,44 @@ logger = logging.getLogger(__name__)
 DEBUG_DUMP_FILE = "selector_debug_dump.html"
 FIX_NEEDED_FILE = os.path.join(".dev", "SELECTOR_FIX_NEEDED.md")
 HEALTH_RESULT_FILE = "selector_health.json"  # written under the profile data dir
+SEARCH_RESULT_FILE = "selector_health_search.json"
+POST_RESULT_FILE = "selector_health_post.json"
+
+# Bump when a field is removed or its meaning changes. Adding a field does not
+# require a bump; readers must ignore what they do not recognise.
+# The field-by-field contract lives in docs/SELECTOR-HEALTH-SCHEMA.md.
+SCHEMA_VERSION = 1
+
+PAGES = ("feed", "search", "post")
+
+RESULT_FILE_BY_PAGE = {
+    "feed": HEALTH_RESULT_FILE,
+    "search": SEARCH_RESULT_FILE,
+    "post": POST_RESULT_FILE,
+}
+
+# Why an entry could not be counted by a passive page load. Every one of these
+# is a reason to say "not checked", never a reason to record a zero. Recording a
+# zero for something that was never tested is how a health check ends up
+# reporting HEALTHY minutes after a run that posted nothing (AUDIT G3).
+GATE_FLAGS = ("requires_interaction", "requires_menu_open", "modal_only")
+
+GATE_REASONS = {
+    "requires_interaction": ("not checked: this element does not exist until the "
+                             "comment box is opened, so a page load cannot count it"),
+    "requires_menu_open": ("not checked: only present after the post's overflow "
+                           "menu is opened"),
+    "modal_only": ("not checked: only present after Connect is clicked, which the "
+                   "health check never does"),
+}
+
+PAGE_NOT_RUN_REASON = {
+    "feed": "not checked: no feed run recorded. Needs a live LinkedIn session.",
+    "search": ("not checked: no people-search run recorded. Needs a live LinkedIn "
+               "session and a search URL."),
+    "post": ("not checked: no post-page run recorded. Needs a live LinkedIn session "
+             "and a post URL."),
+}
 
 # Registry of every selector the scraper depends on. Selectors are pulled from
 # LinkedInScraper so this stays in sync with what the scraper actually uses.
@@ -191,20 +230,35 @@ SELECTOR_REGISTRY: Dict[str, Dict] = {
 
 # ─── Pure logic (unit-tested without a browser) ───────────────────────────────
 
-def check_registry(count_fn: Callable[[str], int], registry: Dict = None) -> Dict:
+def check_registry(count_fn: Callable[[str], int], registry: Dict = None,
+                   xpath_count_fn: Callable[[str], int] = None) -> Dict:
     """Evaluate every registry entry using ``count_fn(selector) -> int``.
+
+    ``xpath_count_fn`` counts entries flagged ``xpath: True``, which cannot be
+    counted by a CSS engine. It defaults to ``count_fn`` because a synthetic
+    counter in a test answers both the same way; every real caller (Selenium,
+    ``dom_probe``) passes a genuine XPath counter, because for the submit button
+    a CSS-only count would return a confident zero.
 
     Returns ``{key: {ok, count, matched_selector, counts, critical, min_expected,
     note}}``. A key is ``ok`` when its best-matching selector reaches
     ``min_expected`` (or when ``min_expected`` is 0).
     """
     registry = registry if registry is not None else SELECTOR_REGISTRY
+    xpath_count_fn = xpath_count_fn or count_fn
     result = {}
     for key, spec in registry.items():
+        counter = xpath_count_fn if spec.get("xpath") else count_fn
         counts = {}
         for sel in spec["selectors"]:
             try:
-                counts[sel] = int(count_fn(sel))
+                counts[sel] = int(counter(sel))
+            except dom_probe.UnsupportedSelector:
+                # Deliberately NOT folded into the zero below. A selector the
+                # offline engine cannot parse is an unknown, and an unknown
+                # recorded as "0 matches" is a claim the page lacks something
+                # nobody actually looked for. Fail the run instead.
+                raise
             except Exception:
                 counts[sel] = 0
         best_sel, best_count = None, 0
@@ -232,6 +286,191 @@ def overall_status(check: Dict) -> str:
     if any(not c["ok"] for c in check.values()):
         return "DEGRADED"
     return "HEALTHY"
+
+
+def gate_reason(spec: Dict) -> str:
+    """Return why a passive page load cannot count this entry, or "" if it can."""
+    for flag in GATE_FLAGS:
+        if spec.get(flag):
+            return GATE_REASONS[flag]
+    return ""
+
+
+def registry_for_page(page: str, include_gated: bool = False,
+                      registry: Dict = None) -> Dict:
+    """Return the registry entries that live on ``page``.
+
+    Interaction-gated entries are excluded unless ``include_gated``, because a
+    page load cannot count them. The probe passes ``include_gated=True`` when it
+    is run against a capture taken with the comment box already open; the health
+    gate never does, so it can never pass on the strength of an untested entry.
+    """
+    registry = registry if registry is not None else SELECTOR_REGISTRY
+    return {
+        key: spec for key, spec in registry.items()
+        if spec.get("page", "feed") == page and (include_gated or not gate_reason(spec))
+    }
+
+
+def result_level(entry_status: str, critical: bool) -> str:
+    """Map an entry status onto the dashboard's green / amber / red."""
+    if entry_status == "pass":
+        return "green"
+    if entry_status == "not_checked":
+        return "amber"
+    return "red" if critical else "amber"
+
+
+def build_health_report(results_by_page: Dict, registry: Dict = None) -> Dict:
+    """Merge per-page run results into one report covering the WHOLE registry.
+
+    ``results_by_page`` maps a page name to that page's run result (the dict
+    ``run_health_check`` and friends return), or to ``None`` when that page was
+    never run.
+
+    Every registry entry appears in the output exactly once, and an entry that
+    was not tested is reported as ``not_checked`` with the reason. That is the
+    difference between this report and a bare status string: a run that only
+    covered the feed cannot present itself as a clean bill of health for
+    posting, which is precisely what happened on 2026-07-31.
+    """
+    registry = registry if registry is not None else SELECTOR_REGISTRY
+    pages, any_fail_critical, any_fail_other, any_unchecked = {}, False, False, False
+
+    for page in PAGES:
+        result = results_by_page.get(page) or None
+        checks = (result or {}).get("checks", {})
+        entries = []
+        for key, spec in registry.items():
+            if spec.get("page", "feed") != page:
+                continue
+            check = checks.get(key)
+            reason = ""
+            if check is None:
+                status = "not_checked"
+                reason = gate_reason(spec) or PAGE_NOT_RUN_REASON[page]
+            else:
+                status = "pass" if check.get("ok") else "fail"
+            critical = bool(spec.get("critical"))
+            if status == "fail":
+                if critical:
+                    any_fail_critical = True
+                else:
+                    any_fail_other = True
+            elif status == "not_checked":
+                any_unchecked = True
+            entries.append({
+                "key": key,
+                "page": page,
+                "critical": critical,
+                "status": status,
+                "level": result_level(status, critical),
+                "reason": reason,
+                "count": (check or {}).get("count", 0),
+                "min_expected": spec.get("min_expected", 0),
+                "matched_selector": (check or {}).get("matched_selector"),
+                "selectors": list(spec["selectors"]),
+                "counts": (check or {}).get("counts", {}),
+                "fix_symbol": spec.get("fix_symbol", ""),
+                "note": spec.get("note", ""),
+            })
+        pages[page] = {
+            "ran": result is not None,
+            "status": (result or {}).get("status", "NOT_RUN"),
+            "source": (result or {}).get("source", "none"),
+            "timestamp": (result or {}).get("timestamp"),
+            "entries": entries,
+        }
+
+    if any_fail_critical:
+        overall = "BROKEN"
+    elif any_fail_other:
+        overall = "DEGRADED"
+    elif any_unchecked:
+        # Deliberately NOT "HEALTHY". Reporting a clean bill for a registry that
+        # was only partly tested is the exact failure this project already had.
+        overall = "INCOMPLETE"
+    else:
+        overall = "HEALTHY"
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "overall": overall,
+        "complete": not any_unchecked,
+        "pages": pages,
+    }
+
+
+# ─── Report schema ────────────────────────────────────────────────────────────
+#
+# Documented field by field in docs/SELECTOR-HEALTH-SCHEMA.md. Kept as data
+# rather than prose so a test can assert a real report satisfies it; a schema
+# only living in a markdown file drifts the first time someone adds a key.
+
+REPORT_SCHEMA: Dict[str, Dict] = {
+    "profile": {"types": (str, type(None)), "required": True},
+    "page": {"types": (str,), "required": True, "choices": PAGES},
+    "source": {"types": (str,), "required": True, "choices": ("live", "fixture")},
+    "status": {"types": (str,), "required": True,
+               "choices": ("HEALTHY", "DEGRADED", "BROKEN")},
+    "schema_version": {"types": (int,), "required": True},
+    "timestamp": {"types": (str,), "required": True},
+    "failed": {"types": (list,), "required": True},
+    "checks": {"types": (dict,), "required": True},
+}
+
+CHECK_SCHEMA: Dict[str, Dict] = {
+    "ok": {"types": (bool,), "required": True},
+    "count": {"types": (int,), "required": True},
+    "matched_selector": {"types": (str, type(None)), "required": True},
+    "counts": {"types": (dict,), "required": True},
+    "critical": {"types": (bool,), "required": True},
+    "min_expected": {"types": (int,), "required": True},
+    "note": {"types": (str,), "required": True},
+}
+
+
+def _validate_fields(obj: Dict, schema: Dict, where: str) -> List[str]:
+    errors = []
+    for field, rule in schema.items():
+        if field not in obj:
+            if rule.get("required"):
+                errors.append(f"{where}: missing required field '{field}'")
+            continue
+        value = obj[field]
+        if not isinstance(value, rule["types"]):
+            names = "/".join(t.__name__ for t in rule["types"])
+            errors.append(f"{where}: '{field}' should be {names}, got "
+                          f"{type(value).__name__}")
+            continue
+        if "choices" in rule and value not in rule["choices"]:
+            errors.append(f"{where}: '{field}' is {value!r}, expected one of "
+                          f"{list(rule['choices'])}")
+    return errors
+
+
+def validate_report(report: Dict) -> List[str]:
+    """Return a list of schema violations. Empty list means the report is valid."""
+    if not isinstance(report, dict):
+        return ["report is not an object"]
+    errors = _validate_fields(report, REPORT_SCHEMA, "report")
+    for key, check in (report.get("checks") or {}).items():
+        if not isinstance(check, dict):
+            errors.append(f"checks['{key}'] is not an object")
+            continue
+        errors.extend(_validate_fields(check, CHECK_SCHEMA, f"checks['{key}']"))
+    failed = report.get("failed")
+    checks = report.get("checks")
+    if isinstance(failed, list) and isinstance(checks, dict):
+        for key in failed:
+            if key not in checks:
+                errors.append(f"report: 'failed' names '{key}', which is not in 'checks'")
+        should_fail = {k for k, c in checks.items()
+                       if isinstance(c, dict) and not c.get("ok")}
+        if should_fail != set(failed):
+            errors.append(f"report: 'failed' is {sorted(failed)} but the failing "
+                          f"checks are {sorted(should_fail)}")
+    return errors
 
 
 def classify_search_page(logged_in: bool, card_count: int) -> str:
@@ -326,6 +565,23 @@ function attrs(el){const o={}; for (const a of el.attributes) o[a.name]=a.value;
 })(root, 0);
 return out;
 """
+
+
+def _driver_counters(driver):
+    """Return ``(css_count, xpath_count)`` bound to a live driver.
+
+    Two functions, not one, because ``SUBMIT_BUTTON_XPATH`` is matched by
+    visible text. Passing it to ``find_elements(By.CSS_SELECTOR, ...)`` does not
+    raise, it returns nothing, and the check would then report a confident zero
+    for the single highest-consequence selector in the project.
+    """
+    def count_css(sel):
+        return len(driver.find_elements(By.CSS_SELECTOR, sel))
+
+    def count_xpath(sel):
+        return len(driver.find_elements(By.XPATH, sel))
+
+    return count_css, count_xpath
 
 
 def _check_copy_link(driver) -> Dict:
@@ -430,18 +686,14 @@ def run_health_check(profile_name: str = None, scrolls: int = 3) -> Dict:
             driver.execute_script("window.scrollBy(0, 1200);")
             time.sleep(2)
 
-        def count_fn(sel):
-            return len(driver.find_elements(By.CSS_SELECTOR, sel))
+        count_fn, xpath_count_fn = _driver_counters(driver)
 
         # Check feed-page selectors here. Skip the menu-dependent copy_link_item
         # (checked separately below) and any page="search" entries (connector
         # selectors live on the search page, not the feed, so they can't be
         # tested by this feed run).
-        page_registry = {
-            k: v for k, v in SELECTOR_REGISTRY.items()
-            if not v.get("requires_menu_open") and v.get("page", "feed") == "feed"
-        }
-        check = check_registry(count_fn, page_registry)
+        page_registry = registry_for_page("feed")
+        check = check_registry(count_fn, page_registry, xpath_count_fn)
         check["copy_link_item"] = _check_copy_link(driver)
         logger.info("(connector search-page selectors are registered but not tested on the feed)")
 
@@ -455,6 +707,9 @@ def run_health_check(profile_name: str = None, scrolls: int = 3) -> Dict:
 
         result = {
             "profile": profile_name,
+            "page": "feed",
+            "source": "live",
+            "schema_version": SCHEMA_VERSION,
             "status": status,
             "timestamp": datetime.now().isoformat(),
             "failed": failed,
@@ -526,16 +781,12 @@ def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3
         driver.execute_script("window.scrollTo(0, 0);")
         time.sleep(1)
 
-        def count_fn(sel):
-            return len(driver.find_elements(By.CSS_SELECTOR, sel))
+        count_fn, xpath_count_fn = _driver_counters(driver)
 
         # Only the connector's search-page selectors, minus modal-only ones (the
         # Send button isn't present until Connect is clicked, which we never do).
-        search_registry = {
-            k: v for k, v in SELECTOR_REGISTRY.items()
-            if v.get("page") == "search" and not v.get("modal_only")
-        }
-        check = check_registry(count_fn, search_registry)
+        search_registry = registry_for_page("search")
+        check = check_registry(count_fn, search_registry, xpath_count_fn)
 
         status = overall_status(check)
         failed = [k for k, c in check.items() if not c["ok"]]
@@ -565,6 +816,8 @@ def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3
         result = {
             "profile": profile_name,
             "page": "search",
+            "source": "live",
+            "schema_version": SCHEMA_VERSION,
             "search_url": search_url,
             "status": status,
             "logged_in": True,
@@ -582,26 +835,172 @@ def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3
                 result["failure_screenshot"] = shot
 
         try:
-            out_path = os.path.join(pm.get_data_dir(profile_name), "selector_health_search.json")
+            out_path = os.path.join(pm.get_data_dir(profile_name), SEARCH_RESULT_FILE)
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(result, f, indent=2)
             result["result_file"] = out_path
         except Exception:
-            logger.debug("Could not write selector_health_search.json", exc_info=True)
+            logger.debug(f"Could not write {SEARCH_RESULT_FILE}", exc_info=True)
 
         return result
     finally:
         driver.quit()
 
 
+def run_post_health_check(profile_name: str, post_url: str) -> Dict:
+    """Check the POSTING path's selectors against a live post permalink page.
+
+    Read-only. It loads the permalink and counts; it never opens the comment box
+    and never types or submits anything, so it cannot post. The two
+    interaction-gated entries (the editor and the submit button) are therefore
+    reported as not checked rather than counted, because they do not exist until
+    the box is opened.
+
+    **This needs a live LinkedIn session and so is Rick's to run**, per the
+    project boundary. Claude Code writes and unit-tests it and never executes it.
+    """
+    driver, _profile = pm.create_driver(profile_name)
+    try:
+        logger.info(f"Loading post permalink: {post_url}")
+        driver.get(post_url)
+        time.sleep(5)
+
+        if not pm.is_logged_in_on_page(driver):
+            raise pm.LoginRequiredError(
+                f"LinkedIn login failed for profile '{profile_name or 'default'}'. "
+                f"Run: python tools/login_check.py --profile {profile_name or 'default'}"
+            )
+
+        count_fn, xpath_count_fn = _driver_counters(driver)
+        check = check_registry(count_fn, registry_for_page("post"), xpath_count_fn)
+
+        status = overall_status(check)
+        failed = [k for k, c in check.items() if not c["ok"]]
+        for key, c in check.items():
+            mark = "PASS" if c["ok"] else "FAIL"
+            crit = "critical" if c["critical"] else "optional"
+            logger.info(f"  [{mark}] {key:24s} ({crit}) count={c['count']} "
+                        f"min={c['min_expected']} via={c['matched_selector']}")
+        for key in sorted(set(registry_for_page("post", include_gated=True))
+                          - set(check)):
+            logger.info(f"  [SKIP] {key:24s} {gate_reason(SELECTOR_REGISTRY[key])}")
+
+        result = {
+            "profile": profile_name,
+            "page": "post",
+            "source": "live",
+            "schema_version": SCHEMA_VERSION,
+            "post_url": post_url,
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "failed": failed,
+            "checks": check,
+        }
+
+        if status == "BROKEN":
+            shot = capture_failure(driver, "post_selectors_broken", profile_name)
+            if shot:
+                result["failure_screenshot"] = shot
+
+        try:
+            out_path = os.path.join(pm.get_data_dir(profile_name), POST_RESULT_FILE)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+            result["result_file"] = out_path
+        except Exception:
+            logger.debug(f"Could not write {POST_RESULT_FILE}", exc_info=True)
+
+        return result
+    finally:
+        driver.quit()
+
+
+def run_fixture_health_check(fixture_path: str, page: str = "feed",
+                             include_gated: bool = False) -> Dict:
+    """Run the registry for ``page`` against a SAVED HTML file. No browser.
+
+    This is what makes the selector gate testable: a fixture with a deliberately
+    renamed class must report BROKEN, and the unmodified fixture must report
+    HEALTHY. Both are verifiable in CI on a machine with no LinkedIn session and
+    no Chrome, which is the only way a gate on this path can run at all.
+    """
+    if page not in PAGES:
+        raise ValueError(f"unknown page '{page}'; expected one of {list(PAGES)}")
+
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    counter = dom_probe.make_counter(html)
+    check = check_registry(
+        lambda sel: counter(sel),
+        registry_for_page(page, include_gated=include_gated),
+        lambda sel: counter(sel, xpath=True),
+    )
+
+    status = overall_status(check)
+    failed = [k for k, c in check.items() if not c["ok"]]
+    return {
+        "profile": None,
+        "page": page,
+        "source": "fixture",
+        "schema_version": SCHEMA_VERSION,
+        "fixture": fixture_path,
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "failed": failed,
+        "checks": check,
+    }
+
+
+def load_saved_reports(profile_name: str = None) -> Dict:
+    """Read whatever per-page reports have been written for this profile.
+
+    Missing pages come back as ``None``, which ``build_health_report`` turns
+    into "not checked" rather than passing over in silence.
+    """
+    reports = {}
+    for page, filename in RESULT_FILE_BY_PAGE.items():
+        reports[page] = None
+        try:
+            path = os.path.join(pm.get_data_dir(profile_name), filename)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    reports[page] = json.load(f)
+        except Exception:
+            logger.warning(f"Could not read {filename} for profile "
+                           f"{profile_name or 'default'}", exc_info=True)
+    return reports
+
+
+def exit_code_for(status: str) -> int:
+    """Map a health status onto a process exit code.
+
+    DEGRADED is non-zero on purpose. A watchdog that only trips on total
+    breakage cannot drive a scheduled check, because the state worth acting on
+    is the one where something has just started to slip.
+    """
+    if status == "BROKEN":
+        return pm.EXIT_ERROR
+    if status == "DEGRADED":
+        return pm.EXIT_DEGRADED
+    return pm.EXIT_OK
+
+
 def _print_summary(result: Dict):
     print("\n" + "=" * 60)
-    print(f"  SELECTOR HEALTH: {result['status']}")
+    print(f"  SELECTOR HEALTH: {result['status']}  "
+          f"[page={result.get('page', 'feed')} source={result.get('source', 'live')}]")
     print("=" * 60)
     for key, c in result["checks"].items():
         mark = "✓" if c["ok"] else "✗"
-        print(f"  {mark} {key:16s} count={c['count']:>3} (min {c['min_expected']}) "
+        print(f"  {mark} {key:24s} count={c['count']:>3} (min {c['min_expected']}) "
               f"{'[critical]' if c['critical'] else ''}")
+    skipped = sorted(
+        set(registry_for_page(result.get("page", "feed"), include_gated=True))
+        - set(result["checks"])
+    )
+    for key in skipped:
+        print(f"  – {key:24s} {gate_reason(SELECTOR_REGISTRY[key])}")
     if result.get("debug_dump"):
         print(f"\n  DOM dump: {result['debug_dump']}")
     if result.get("suggested_selectors"):
@@ -614,7 +1013,10 @@ def _print_summary(result: Dict):
 
 
 def main(argv=None) -> int:
-    """CLI entry point. Exit 0 = HEALTHY/DEGRADED, 1 = BROKEN/error, 2 = login required."""
+    """CLI entry point.
+
+    Exit codes: 0 HEALTHY, 1 BROKEN or error, 2 login required, 3 DEGRADED.
+    """
     # Make emoji output safe on the Windows cp1252 console.
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -628,17 +1030,39 @@ def main(argv=None) -> int:
     parser.add_argument("--search-url", default=None,
                         help="Check the connector's people-SEARCH-page selectors against this "
                              "URL instead of the feed (does NOT click Connect / send invites)")
+    parser.add_argument("--post-url", default=None,
+                        help="Check the POSTING path's selectors against this post permalink. "
+                             "Read-only: it never opens the comment box and never posts")
+    parser.add_argument("--fixture", default=None,
+                        help="Check a SAVED HTML file instead of a live page. No browser and no "
+                             "LinkedIn session; this is how the gate runs in CI")
+    parser.add_argument("--page", default=None, choices=list(PAGES),
+                        help="Which registry page a --fixture run should check (default: feed)")
+    parser.add_argument("--include-gated", action="store_true",
+                        help="Also check the interaction-gated selectors (the comment editor, "
+                             "the submit button, the Copy-link item). Only meaningful against a "
+                             "--fixture captured with that state already open")
     parser.add_argument("--json", action="store_true", help="Print the JSON result to stdout")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     try:
-        pm.auto_migrate_from_env()
-        if args.search_url:
-            result = run_search_health_check(args.profile, args.search_url, scrolls=args.scrolls)
+        if args.fixture:
+            # Deliberately before auto_migrate_from_env and before any profile
+            # lookup: a fixture run must work on a machine that has never had a
+            # LinkedIn session, which is the whole point of it.
+            result = run_fixture_health_check(args.fixture, page=args.page or "feed",
+                                              include_gated=args.include_gated)
         else:
-            result = run_health_check(args.profile, scrolls=args.scrolls)
+            pm.auto_migrate_from_env()
+            if args.search_url:
+                result = run_search_health_check(args.profile, args.search_url,
+                                                 scrolls=args.scrolls)
+            elif args.post_url:
+                result = run_post_health_check(args.profile, args.post_url)
+            else:
+                result = run_health_check(args.profile, scrolls=args.scrolls)
     except pm.LoginRequiredError as e:
         print(f"\n❌ {e}")
         return pm.EXIT_LOGIN_REQUIRED
@@ -651,7 +1075,7 @@ def main(argv=None) -> int:
     else:
         _print_summary(result)
 
-    return pm.EXIT_ERROR if result["status"] == "BROKEN" else pm.EXIT_OK
+    return exit_code_for(result["status"])
 
 
 if __name__ == "__main__":

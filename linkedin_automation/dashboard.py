@@ -28,6 +28,7 @@ from . import profile_manager as pm
 from . import post_store
 from . import providers
 from . import scheduler as scheduler_mod
+from . import selector_health as shc
 
 load_dotenv()
 
@@ -1096,16 +1097,43 @@ def post_comments(profile_name):
 
 @app.route('/api/health/<profile_name>/selectors', methods=['POST'])
 def selector_health(profile_name):
-    """POST /api/health/<name>/selectors — run the selector health check as a job.
+    """POST /api/health/<name>/selectors — run one page's selector check as a job.
 
-    The job result is the structured health report (status HEALTHY/DEGRADED/BROKEN
-    plus per-selector counts) that the selector-health module writes; poll
-    /api/jobs/<job_id> for it.
+    Body (all optional): ``{"page": "feed"|"search"|"post", "url": "..."}``.
+    ``feed`` is the default and needs no URL; ``search`` and ``post`` each need
+    the URL of the page to check, because neither can be reached from the feed.
+
+    The job result is the structured report (HEALTHY/DEGRADED/BROKEN plus
+    per-selector counts) that the selector-health module writes; poll
+    /api/jobs/<job_id> for it. Every one of these needs a live LinkedIn session,
+    so they are Rick's to run.
     """
-    job_id = f"health_{profile_name}_{int(time.time())}"
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "Body must be a JSON object"}), 400
+
+    page = body.get("page", "feed")
+    if page not in shc.PAGES:
+        return jsonify({"error": f"Unknown page '{page}'. Expected one of "
+                                 f"{list(shc.PAGES)}"}), 400
+
+    url = body.get("url")
+    if page in ("search", "post"):
+        if not isinstance(url, str) or not url.strip():
+            return jsonify({"error": f"The {page} check needs a 'url': the "
+                                     f"{page} page cannot be reached from the feed"}), 400
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            return jsonify({"error": "'url' must be an http(s) URL"}), 400
+
+    job_id = f"health_{page}_{profile_name}_{int(time.time())}"
+    flag = {"search": "--search-url", "post": "--post-url"}.get(page)
 
     def do_health(jid, pname):
-        cmd = [sys.executable, "-m", "linkedin_automation.selector_health", "--profile", pname]
+        cmd = [sys.executable, "-m", "linkedin_automation.selector_health",
+               "--profile", pname]
+        if flag:
+            cmd += [flag, url]
         returncode, _ = run_subprocess(jid, cmd)
 
         if returncode == pm.EXIT_LOGIN_REQUIRED:
@@ -1113,19 +1141,38 @@ def selector_health(profile_name):
                 f"Login required. Run: python tools/login_check.py --profile {pname}"
             )
 
-        # The script writes the structured result even when status is BROKEN
-        # (exit code 1), so read it rather than treating non-zero as failure.
-        result_path = os.path.join(pm.get_data_dir(pname), "selector_health.json")
+        # The script writes the structured result even when the status is BROKEN
+        # (exit 1) or DEGRADED (exit 3), so read it rather than treating non-zero
+        # as failure. A degraded run is the one you most want to see.
+        result_path = os.path.join(pm.get_data_dir(pname),
+                                   shc.RESULT_FILE_BY_PAGE[page])
         if os.path.exists(result_path):
             with open(result_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        return {"status": "UNKNOWN", "returncode": returncode}
+        return {"status": "UNKNOWN", "page": page, "returncode": returncode}
 
     if not can_start_browser_task(profile_name):
         return jsonify({"error": f"A browser task is already running for {profile_name}. Wait for it to finish."}), 409
     run_job(job_id, do_health, profile_name,
             profile=profile_name, task_type="browser", category="selector_health")
     return jsonify({"job_id": job_id})
+
+
+@app.route('/api/health/<profile_name>/report', methods=['GET'])
+def selector_health_report(profile_name):
+    """GET /api/health/<name>/report — the whole registry, both paths, at a glance.
+
+    Merges whatever per-page runs have been saved into one report in which
+    EVERY selector appears, with the ones that were not tested marked as such
+    and told why. Runs nothing and needs no session: it reads saved results.
+
+    This endpoint exists because of what happened on 2026-07-31. A feed-only run
+    reported HEALTHY minutes after a posting run placed zero of three comments,
+    and it was not wrong about the feed. The fix is a report that cannot present
+    partial coverage as a clean bill of health.
+    """
+    report = shc.build_health_report(shc.load_saved_reports(profile_name))
+    return jsonify(report)
 
 
 # ─── API: Auto-Connector ─────────────────────────────────────────────────────

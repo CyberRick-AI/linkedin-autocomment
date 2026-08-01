@@ -51,6 +51,11 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_LOGIN_REQUIRED = 2
+# A monitor that only fails on total breakage cannot drive an alert: the
+# interesting state is the one where something has started to slip. The selector
+# watchdog exits with this on DEGRADED so a scheduled run can act on it, while
+# still being distinguishable from BROKEN (EXIT_ERROR) and from a crash.
+EXIT_DEGRADED = 3
 
 # Explicit page load ceiling. Selenium defaults to 300s, which turns a slow or
 # hanging navigation into a multi-minute stall with no diagnostic.

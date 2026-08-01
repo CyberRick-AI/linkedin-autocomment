@@ -84,9 +84,11 @@ linkedin-automation/
 │   ├── post_store.py                   # Central per-profile post lifecycle store
 │   ├── scheduler.py                    # Randomized twice-daily auto-post engine
 │   ├── failure_capture.py              # Screenshots + DOM sidecars on browser errors
-│   └── selector_health.py              # Detects when LinkedIn's DOM breaks selectors
+│   ├── selector_health.py              # Detects when LinkedIn's DOM breaks selectors
+│   └── dom_probe.py                    # Counts selector matches in saved HTML (no browser)
 ├── tools/                              # standalone maintenance / diagnostic scripts
 │   ├── login_check.py                  # Check/establish a profile's LinkedIn session
+│   ├── selector_probe.py               # Which selectors still match, live page or saved file
 │   ├── reconcile_bins.py               # Reconcile + print lifecycle bins
 │   ├── feed_dump.py / connector_dump.py  # Selector-debug helpers (dump live DOM)
 │   └── run_linkedin_workflow.py        # Non-dashboard CLI pipeline runner
@@ -360,16 +362,68 @@ constant to edit in which module, and the hard-won gotchas). The short version:
 uv run python -m linkedin_automation.selector_health --profile <name>
 ```
 
-It opens the feed, tests every selector the scraper uses (pulled from
-`linkedin_automation/post_finder.py` so the registry stays in sync), and reports
-**HEALTHY / DEGRADED / BROKEN**. On failure it dumps the current DOM to
+It opens the feed, tests every selector the scraper uses (pulled from class
+constants so the registry stays in sync with what the code actually uses), and
+reports **HEALTHY / DEGRADED / BROKEN**. On failure it dumps the current DOM to
 `selector_debug_dump.html`, suggests replacement selectors, and — if a critical
 selector broke — writes `.dev/SELECTOR_FIX_NEEDED.md` with a ready-to-paste fix
-prompt. It never auto-edits selectors. The dashboard exposes the same check at
-`POST /api/health/<profile>/selectors` (runs as a background job).
+prompt. It never auto-edits selectors.
 
-When you need to hand-inspect the live DOM to write new selectors, the two
-dumpers save the current HTML (git-ignored, since they contain feed content):
+The registry covers all three paths, so the same command checks the other two:
+
+```bash
+# The posting path. Read-only: it loads the permalink and counts. It never
+# opens the comment box and never posts.
+uv run python -m linkedin_automation.selector_health --profile <name> --post-url "<post url>"
+
+# The connector path.
+uv run python -m linkedin_automation.selector_health --profile <name> --search-url "<people-search url>"
+```
+
+Exit codes: **0** healthy, **1** broken, **2** login required, **3** degraded.
+Degraded is non-zero on purpose, so a scheduled run can act on a selector that
+has only just started to slip.
+
+### Checking without a LinkedIn session
+
+`tools/selector_probe.py` counts what every selector actually matches, and it
+works against a **saved HTML file** as well as a live page — no browser, no
+network, no account:
+
+```bash
+uv run python tools/selector_probe.py --fixture tests/fixtures/post_healthy.html --page post
+uv run python tools/selector_probe.py --profile <name> --url "<post url>" --open-box
+```
+
+It prints one row per selector with its match count, names the constant to edit
+for anything failing, and lists the `data-testid` / `data-view-name` /
+`aria-label` hooks the page actually carries so a replacement is chosen from
+what is in front of you. `--open-box` clicks the Comment button so the editor
+and submit button can be counted at all; it types nothing and submits nothing.
+
+The health check takes `--fixture` too, which is how the selector gate runs in
+CI against `tests/fixtures/`.
+
+### In the dashboard
+
+The Scrape panel's **Check Selectors** button runs the feed check, and **Full
+Report** shows every selector across all three paths with a green / amber / red
+status. An entry that could not be tested says so and says why, rather than
+being counted as a zero or passed over — a feed-only run reads `INCOMPLETE`,
+never `HEALTHY`. Endpoints: `POST /api/health/<profile>/selectors` (runs a
+check as a background job) and `GET /api/health/<profile>/report` (reads the
+saved results, runs nothing).
+
+### Repairing one
+
+[docs/SELECTOR-REPAIR.md](docs/SELECTOR-REPAIR.md) is the step-by-step loop,
+with the two 2026-07-31 fixes as a worked example and each step marked for
+whether it needs a live session.
+[docs/SELECTOR-HEALTH-SCHEMA.md](docs/SELECTOR-HEALTH-SCHEMA.md) documents the
+JSON reports field by field.
+
+When you need to hand-inspect the live DOM, the two dumpers save the current
+HTML (git-ignored, since they contain feed content):
 
 ```bash
 uv run python tools/feed_dump.py --profile <name>              # feed page + a selector probe

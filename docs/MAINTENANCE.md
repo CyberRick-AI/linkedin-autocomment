@@ -55,16 +55,36 @@ uv run python -m linkedin_automation.selector_health --profile <name> \
     --search-url "<people-search results URL>"
 ```
 
-Optional: `--scrolls N` (feed scrolls before checking, default 3) and `--json`
-(print the raw result).
+Posting selectors, against one post permalink. Read-only: it loads the page and
+counts, it never opens the comment box and never posts:
+
+```bash
+uv run python -m linkedin_automation.selector_health --profile <name> \
+    --post-url "<post permalink URL>"
+```
+
+Optional: `--scrolls N` (feed scrolls before checking, default 3), `--json`
+(print the raw result), and `--fixture <file>` (check a saved HTML file instead
+of a live page — no browser and no LinkedIn session).
+
+> **The full repair loop is [SELECTOR-REPAIR.md](SELECTOR-REPAIR.md)**, with a
+> worked example and each step marked for whether it needs a live session.
+> `tools/selector_probe.py` is the tool that locates which selector went stale;
+> the JSON reports are documented in
+> [SELECTOR-HEALTH-SCHEMA.md](SELECTOR-HEALTH-SCHEMA.md).
 
 ### Reading the output
 
 The check reports an overall status and per-selector match counts:
 
-- **HEALTHY** — every critical selector matched > 0 elements. Trust it.
+- **HEALTHY** — every critical selector matched > 0 elements. Trust it *for the
+  page that was checked*, which is not the same as trusting the whole tool. The
+  dashboard's Full Report shows all three paths at once and reads `INCOMPLETE`
+  rather than `HEALTHY` when only some were run.
 - **DEGRADED** — some non-critical selectors failed but the pipeline can still run.
 - **BROKEN** — a critical selector matched 0 elements. Scraping/connecting is down.
+
+Exit codes: **0** healthy, **1** broken, **2** login required, **3** degraded.
 
 On failure it writes three things:
 
@@ -128,8 +148,11 @@ today:
 
 ### Step 3 — update the constants (which file, which constant)
 
-After the restructure, selectors live as class constants near the top of two
-modules:
+After the restructure, selectors live as class constants near the top of three
+modules. **Keep them there.** The health registry is built from these constants
+so it cannot drift from what the code actually uses, which also means a selector
+inlined back into a method body silently drops out of monitoring. A test asserts
+the registry lists *are* the constants, so doing that breaks the build.
 
 **`linkedin_automation/post_finder.py`** (`LinkedInScraper`):
 
@@ -140,6 +163,20 @@ modules:
 - `CONTROL_MENU_SELECTOR` + `CONTROL_MENU_AUTHOR_PREFIX` — the "…" menu button and
   the aria-label prefix the author name is parsed from.
 - `MENU_ITEM_SELECTORS` — items inside the opened "…" menu (incl. "Copy link").
+
+**`linkedin_automation/comment_poster.py`** (`LinkedInCommentPoster`) — the
+posting path, which is the highest-consequence one:
+
+- `POST_DETAIL_SELECTORS` — proves the permalink page rendered.
+- `LIKE_BUTTON_SELECTORS` / `LIKED_STATE_SELECTORS` — the reaction button. Absent
+  when the post is already liked, so a zero here is ambiguous, not broken.
+- `COMMENT_BUTTON_LABEL_SELECTORS` + `COMMENT_BUTTON_TEXT_SELECTOR` — the
+  action-bar button that **opens** the comment box.
+- `COMMENT_INPUT_SELECTORS` — the editor. Does not exist until the box is opened.
+- `SUBMIT_BUTTON_XPATH` — the button that **posts** the comment, matched on
+  visible text because the opener carries `aria-label="Comment"` while the
+  submitter's visible text *is* `Comment`. Telling those apart is the entire
+  2026-07-31 fix; see [SELECTOR-REPAIR.md](SELECTOR-REPAIR.md).
 
 **`linkedin_automation/auto_connector.py`** (`LinkedInAutoConnector`):
 

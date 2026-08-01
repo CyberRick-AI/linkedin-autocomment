@@ -1043,12 +1043,45 @@ header {
       <button class="btn btn-primary" id="scrapeBtn" onclick="startScrape()">
         Start Scraping
       </button>
-      <button class="btn btn-sm" id="checkSelectorsBtn" onclick="checkSelectors()">
+      <button class="btn btn-sm" id="checkSelectorsBtn" onclick="checkSelectors('feed')">
         Check Selectors
       </button>
+      <button class="btn btn-sm" onclick="loadSelectorReport()">Full Report</button>
       <span id="selectorBadge" style="display:none"></span>
     </div>
     <div id="selectorResult" style="display:none;margin-top:0.75rem;font-family:var(--mono);font-size:0.78rem;color:var(--text-dim)"></div>
+
+    <!-- Per-selector health across BOTH paths. The feed check alone once
+         reported HEALTHY minutes after a posting run placed zero of three
+         comments, so this view shows every selector in the registry and says
+         plainly which ones were not tested, and why. -->
+    <div id="selectorHealth" style="display:none;margin-top:1rem">
+      <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+        <strong style="font-size:0.85rem">Selector health</strong>
+        <span id="selectorOverall" class="cfg-badge"></span>
+        <span id="selectorOverallNote" style="font-size:0.78rem;color:var(--text-dim)"></span>
+      </div>
+      <div id="selectorRows" style="margin-top:0.6rem"></div>
+      <div class="settings-row" style="margin-top:0.75rem">
+        <div class="form-group">
+          <label>Post permalink URL (checks the posting path)</label>
+          <input type="text" id="healthPostUrl" placeholder="https://www.linkedin.com/feed/update/urn:li:activity:.../">
+        </div>
+        <div class="form-group">
+          <label>People-search URL (checks the connector path)</label>
+          <input type="text" id="healthSearchUrl" placeholder="https://www.linkedin.com/search/results/people/?keywords=...">
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-sm" onclick="checkSelectors('post')">Check Posting Path</button>
+        <button class="btn btn-sm" onclick="checkSelectors('search')">Check Connector Path</button>
+      </div>
+      <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--text-dim)">
+        Each check opens Chrome and needs a logged-in LinkedIn session. The
+        posting check is read-only: it loads the permalink and counts, it never
+        opens the comment box and never posts.
+      </div>
+    </div>
 
     <div class="console" id="scrapeLog" style="display:none"></div>
   </div>
@@ -2427,8 +2460,18 @@ async function setDefaultProfile() {
 
 // ─── Selector Health Check ──────────────────────────────
 
-async function checkSelectors() {
+async function checkSelectors(page) {
+  page = page || 'feed';
   if (!currentProfile) return alert('Select a profile first');
+
+  const body = { page };
+  if (page === 'post' || page === 'search') {
+    const field = page === 'post' ? 'healthPostUrl' : 'healthSearchUrl';
+    const url = (document.getElementById(field).value || '').trim();
+    if (!url) return alert(`Enter a ${page === 'post' ? 'post permalink' : 'people-search'} URL first`);
+    body.url = url;
+  }
+
   const btn = document.getElementById('checkSelectorsBtn');
   const badge = document.getElementById('selectorBadge');
   const result = document.getElementById('selectorResult');
@@ -2442,11 +2485,17 @@ async function checkSelectors() {
   try {
     const res = await fetch(`/api/health/${currentProfile}/selectors`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
     });
     if (res.status === 409) {
       const err = await res.json();
       alert(err.error || 'A task is already running for this profile');
+      return finish();
+    }
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || 'The health check was rejected');
       return finish();
     }
     const { job_id } = await res.json();
@@ -2459,6 +2508,7 @@ async function checkSelectors() {
         if (job.status === 'completed') {
           clearInterval(iv);
           renderSelectorResult(job.result || {});
+          loadSelectorReport();
           refreshActiveJobs();
           finish();
         } else if (job.status === 'failed') {
@@ -2507,6 +2557,82 @@ function renderSelectorResult(result) {
     detail.style.display = 'none';
     detail.innerHTML = '';
   }
+}
+
+// ─── Full selector report: every selector, both paths ───────────────────────
+//
+// The status of one page is not the health of the tool. A feed run can be
+// perfectly green while the posting path is broken, which is exactly what
+// happened on 2026-07-31. This view lists every selector in the registry and
+// says which were not tested and why, so a partial run cannot read as a pass.
+
+const LEVEL_COLORS = { green: 'var(--green)', amber: 'var(--yellow)', red: 'var(--red)' };
+
+const PAGE_LABELS = {
+  feed: 'Feed — scraping path',
+  post: 'Post permalink — posting path',
+  search: 'People search — connector path',
+};
+
+const OVERALL_NOTES = {
+  HEALTHY: 'Every selector in the registry was checked and matched.',
+  DEGRADED: 'A non-critical selector matched nothing.',
+  BROKEN: 'A critical selector matched nothing. Runs on that path will fail silently.',
+  INCOMPLETE: 'Nothing failed, but part of the registry was never checked. Not a clean bill of health.',
+};
+
+async function loadSelectorReport() {
+  if (!currentProfile) return alert('Select a profile first');
+  const wrap = document.getElementById('selectorHealth');
+  try {
+    const res = await fetch(`/api/health/${currentProfile}/report`);
+    const report = await res.json();
+    renderSelectorReport(report);
+    wrap.style.display = 'block';
+  } catch (e) {
+    wrap.style.display = 'block';
+    document.getElementById('selectorRows').textContent = 'Could not load the report: ' + e.message;
+  }
+}
+
+function renderSelectorReport(report) {
+  const overall = document.getElementById('selectorOverall');
+  overall.textContent = report.overall || 'UNKNOWN';
+  overall.style.background = LEVEL_COLORS[report.overall === 'HEALTHY' ? 'green'
+    : report.overall === 'BROKEN' ? 'red' : 'amber'];
+  overall.style.color = '#000';
+  document.getElementById('selectorOverallNote').textContent =
+    OVERALL_NOTES[report.overall] || '';
+
+  const out = [];
+  for (const page of ['feed', 'post', 'search']) {
+    const data = (report.pages || {})[page];
+    if (!data) continue;
+    const ran = data.ran
+      ? `last run ${esc(data.timestamp || '')} (${esc(data.source || '')})`
+      : 'never run on this profile';
+    out.push(`<div style="margin-top:0.7rem;font-size:0.8rem">
+        <strong>${esc(PAGE_LABELS[page] || page)}</strong>
+        <span style="color:var(--text-dim)"> — ${ran}</span></div>`);
+    for (const entry of data.entries || []) {
+      const color = LEVEL_COLORS[entry.level] || 'var(--text-muted)';
+      const detail = entry.status === 'not_checked'
+        ? esc(entry.reason)
+        : `${entry.count} match${entry.count === 1 ? '' : 'es'} (min ${entry.min_expected})` +
+          (entry.matched_selector ? ` via <code>${esc(entry.matched_selector)}</code>` : '');
+      const fix = entry.status === 'fail'
+        ? ` <span style="color:var(--text-dim)">— edit ${esc(entry.fix_symbol)}</span>` : '';
+      out.push(`<div style="display:flex;gap:0.5rem;align-items:baseline;
+                    font-family:var(--mono);font-size:0.75rem;padding:0.15rem 0">
+          <span style="color:${color}">&#9679;</span>
+          <span style="min-width:13rem">${esc(entry.key)}${entry.critical ? '*' : ''}</span>
+          <span style="color:var(--text-dim)">${detail}${fix}</span>
+        </div>`);
+    }
+  }
+  out.push(`<div style="margin-top:0.5rem;font-size:0.72rem;color:var(--text-dim)">
+      * critical. A red on a critical selector means that path fails with no error.</div>`);
+  document.getElementById('selectorRows').innerHTML = out.join('');
 }
 
 // ─── Helpers ────────────────────────────────────────────
