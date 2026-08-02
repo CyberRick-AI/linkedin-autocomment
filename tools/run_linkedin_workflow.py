@@ -464,8 +464,9 @@ Examples:
             missing_vars.append('LINKEDIN_USERNAME (or run: python linkedin_profile_manager.py add <n>)')
         if not os.getenv('LINKEDIN_PASSWORD') and not os.getenv('LINKEDIN_ALT_PASSWORD'):
             missing_vars.append('LINKEDIN_PASSWORD (or run: python linkedin_profile_manager.py add <n>)')
-    if not args.skip_comments and not os.getenv('OPENAI_API_KEY'):
-        missing_vars.append('OPENAI_API_KEY')
+    # Deliberately no OPENAI_API_KEY check: the provider is per-profile
+    # configuration now, so demanding OpenAI's variable is wrong for every
+    # profile not using OpenAI. The provider layer raises naming the right one.
     
     if missing_vars:
         logger.error("❌ Missing required environment variables:")

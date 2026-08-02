@@ -1032,7 +1032,13 @@ def generate_comments(profile_name):
             log_job(jid, f"Comments saved to: {json_files[0]}")
             return {"file": json_files[0]}
         
-        raise RuntimeError("No comments file found")
+        # Reached only when the generator exited 0 and still wrote nothing.
+        # It used to be reached on *every* failure, because the generator
+        # printed its error and returned 0 — so the operator was shown a
+        # downstream symptom instead of the cause. Say which it is.
+        raise RuntimeError(
+            "The generator finished without writing a comments file. Check the "
+            "job log above for the reason it gave.")
     
     run_job(job_id, do_generate, profile_name, input_file, model, limit,
             profile=profile_name, task_type="api", category="generate_comments")

@@ -8,6 +8,7 @@ Writes ``comments_*.json`` for the dashboard review step.
 
 import json
 import os
+import sys
 import re
 import time
 from datetime import datetime
@@ -39,6 +40,11 @@ try:
     HAS_PROFILE_MANAGER = True
 except ImportError:
     HAS_PROFILE_MANAGER = False
+
+# The profile manager is an optional import here, so the exit codes cannot be
+# read off it unconditionally. Same values, stated once.
+EXIT_OK = pm.EXIT_OK if HAS_PROFILE_MANAGER else 0
+EXIT_ERROR = pm.EXIT_ERROR if HAS_PROFILE_MANAGER else 1
 
 # Lifecycle store (NEW → GENERATED on each accepted comment). Optional so the
 # generator still runs in the degraded no-profile-manager mode.
@@ -973,20 +979,35 @@ def main():
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name (for data directory)')
     
     args = parser.parse_args()
-    
-    if not os.getenv('OPENAI_API_KEY'):
-        print("Error: OPENAI_API_KEY missing")
-        return
-    
-    generator = AuthenticLinkedInCommentGenerator(
-        args.input_file, args.model, args.limit, profile_name=args.profile
-    )
-    
-    results = generator.generate_all_comments()
-    
+
+    # No OPENAI_API_KEY check here. It predates the provider layer and was
+    # invisible only because .env shipped a placeholder that satisfied
+    # os.getenv; with that cleared it refused to run a profile configured for
+    # xAI, naming the wrong vendor's variable. The provider layer already
+    # raises an actionable ProviderError naming the provider that is actually
+    # selected and the variable it actually needs.
+    try:
+        generator = AuthenticLinkedInCommentGenerator(
+            args.input_file, args.model, args.limit, profile_name=args.profile
+        )
+        results = generator.generate_all_comments()
+    except providers.ProviderError as e:
+        # Exit NON-ZERO. Printing an error and returning 0 told the dashboard
+        # the run succeeded, which then reported "No comments file found" — a
+        # downstream symptom in place of the actual cause.
+        print(f"\n❌ {e}")
+        return EXIT_ERROR
+    except Exception as e:
+        print(f"\n❌ Comment generation failed: {e}")
+        return EXIT_ERROR
+
     if results:
         print(f"\n✓ Generated {len(results)} authentic comments")
+        return EXIT_OK
+
+    print("\n❌ No comments were generated.")
+    return EXIT_ERROR
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
