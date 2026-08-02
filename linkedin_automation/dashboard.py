@@ -1410,6 +1410,21 @@ def start_connector(profile_name):
                 f"Login required. Press \"Log in\" in the dashboard header, or run: "
                 f"python tools/login_check.py --profile {pname}"
             )
+
+        # A stop the operator asked for is not a failure. stop_connector both
+        # writes the stop file and calls terminate(), so the process dies of
+        # SIGTERM and returns -15. Reporting that as a RuntimeError with a
+        # traceback tells the operator something broke when what actually
+        # happened is that they pressed Stop and it worked.
+        #
+        # Observed 2026-08-02: Rick stopped a connector run after three
+        # requests and the dashboard showed a red stack trace ending
+        # "Auto-connector exited with code -15".
+        if jobs.get(jid, {}).get("status") == "stopped":
+            sent = "; requests already sent are recorded in the tracker"
+            log_job(jid, f"Stopped at your request{sent}.")
+            return {"completed": False, "stopped": True}
+
         if returncode != 0:
             raise RuntimeError(f"Auto-connector exited with code {returncode}")
 

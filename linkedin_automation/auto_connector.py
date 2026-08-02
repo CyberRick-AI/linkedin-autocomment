@@ -272,7 +272,8 @@ class LinkedInAutoConnector:
     INTEROP_OUTLET_SELECTOR = "#interop-outlet"
 
     def __init__(self, profile_name: str = None, max_requests: int = None,
-                 add_note: bool = None, note_text: str = None, debug: bool = False):
+                 add_note: bool = None, note_text: str = None, debug: bool = False,
+                 send_without_note_fallback: bool = None):
         self.profile_name = profile_name
 
         # Per-profile connector config; explicit CLI args (passed in) still win.
@@ -287,6 +288,16 @@ class LinkedInAutoConnector:
         self.max_requests = max_requests if max_requests is not None else self.daily_limit
         self.note_text = note_text if note_text is not None else conn.get("note_template", "")
         self.add_note = add_note if add_note is not None else bool(self.note_text)
+        # When a note is configured but cannot be attached, refuse by default.
+        # A connection request is not recallable and the weekly invite
+        # allowance is finite, so spending one on an invite the operator did
+        # not write is the more expensive mistake. Opt in to the old behaviour
+        # per run with --send-without-note-if-needed.
+        self.send_without_note_fallback = (
+            send_without_note_fallback
+            if send_without_note_fallback is not None
+            else bool(conn.get("send_without_note_if_needed", False))
+        )
         self.debug = debug
 
         self.driver = None
@@ -733,12 +744,40 @@ class LinkedInAutoConnector:
             logger.info("  ↳ Landed on invite page")
             return self._handle_invite_page()
 
-        # Case 2: Popup appeared on same page — find "Send without a note"
-        # The popup may not be a standard modal. Search broadly.
-        
+        # Case 2: Popup appeared on same page.
+        #
         # Wait for popup to render (it comes up quick per Jeff)
         hb.human_sleep(0.5, 1.0)
-        
+
+        # The note comes first, and it has to, because clicking 'Send without
+        # a note' succeeds and ends the flow.
+        #
+        # Observed 2026-08-02 on Rick's first real connector run: he entered a
+        # note, three requests went out, and every one logged "Clicked 'Send
+        # without a note'". The note-typing code existed in two other methods
+        # and neither was reachable: both sit after this call and only run when
+        # it fails, and against LinkedIn's current shadow-DOM popup it never
+        # fails. The operator's input was read, passed down four layers, and
+        # silently discarded at the last step.
+        #
+        # Same shape as the unreachable XPath branch in Phase 11b, with a worse
+        # outcome: that one under-reported, this one sent something other than
+        # what was asked for, to real people, unrecallably.
+        if self.add_note and self.note_text:
+            if self._send_with_note():
+                hb.human_sleep(0.3, 0.6)
+                return True
+            if not self.send_without_note_fallback:
+                logger.warning(
+                    "  ↳ A note was configured but could not be attached, and "
+                    "sending without it was not authorised. Dismissing without "
+                    "sending. Pass --send-without-note-if-needed to send anyway.")
+                self._close_modal()
+                return False
+            logger.warning(
+                "  ↳ Could not attach the note; sending without it because "
+                "--send-without-note-if-needed was given")
+
         # Try multiple strategies to find and click "Send without a note"
         if self._click_send_without_note():
             hb.human_sleep(0.3, 0.6)
@@ -765,6 +804,114 @@ class LinkedInAutoConnector:
         # screenshot + DOM is the fastest way to see what LinkedIn rendered.
         capture_failure(self.driver, "send_modal_missing", self.profile_name)
         return False
+
+    # ── Sending with a note ───────────────────────────────────────────────────
+    # The popup lives inside the shadow root of <div id="interop-outlet">, so
+    # ordinary Selenium selectors cannot reach any of it. Each step returns the
+    # element through execute_script, which hands back a real WebElement that
+    # send_keys and click work on.
+
+    SHADOW_HOST_SELECTOR = "#interop-outlet"
+    ADD_NOTE_LABELS = ("Add a note", "Add note")
+    SEND_LABELS = ("Send invitation", "Send now", "Send")
+
+    def _shadow_button(self, labels):
+        """Return the first shadow-root button whose text is in ``labels``."""
+        return self.driver.execute_script(
+            """
+            var host = document.querySelector(arguments[0]);
+            var labels = arguments[1];
+            var roots = [];
+            if (host && host.shadowRoot) { roots.push(host.shadowRoot); }
+            // Fall back to every shadow root on the page, the same broad search
+            // the without-note path uses when the known host moves.
+            var all = document.querySelectorAll('*');
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].shadowRoot) { roots.push(all[i].shadowRoot); }
+            }
+            for (var r = 0; r < roots.length; r++) {
+                var buttons = roots[r].querySelectorAll('button');
+                for (var b = 0; b < buttons.length; b++) {
+                    var text = buttons[b].textContent.trim();
+                    for (var l = 0; l < labels.length; l++) {
+                        if (text === labels[l]) { return buttons[b]; }
+                    }
+                }
+            }
+            return null;
+            """,
+            self.SHADOW_HOST_SELECTOR, list(labels),
+        )
+
+    def _shadow_textarea(self):
+        """Return the note textarea from inside the popup's shadow root."""
+        return self.driver.execute_script(
+            """
+            var host = document.querySelector(arguments[0]);
+            var roots = [];
+            if (host && host.shadowRoot) { roots.push(host.shadowRoot); }
+            var all = document.querySelectorAll('*');
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].shadowRoot) { roots.push(all[i].shadowRoot); }
+            }
+            for (var r = 0; r < roots.length; r++) {
+                var ta = roots[r].querySelector('textarea');
+                if (ta) { return ta; }
+            }
+            return null;
+            """,
+            self.SHADOW_HOST_SELECTOR,
+        )
+
+    def _send_with_note(self) -> bool:
+        """Attach the configured note, then send. True only if it actually sent.
+
+        Returns False rather than falling through to a note-less send, so the
+        caller decides. That decision is deliberately not made here: sending
+        something other than what the operator wrote is exactly the defect this
+        method exists to fix.
+
+        **Not verified against live LinkedIn.** Every step is asserted against
+        a fake driver, and the shadow-DOM structure it targets is the one the
+        without-note path already relies on. Whether LinkedIn offers "Add a
+        note" at all depends on the account: free accounts are limited in how
+        many invitations may carry a note, and when the allowance is gone the
+        button is absent. That is why the failure path is loud and refuses by
+        default instead of quietly sending a bare invite.
+        """
+        try:
+            add_note = self._shadow_button(self.ADD_NOTE_LABELS)
+            if not add_note:
+                logger.warning(
+                    "  ↳ No 'Add a note' control in the invite popup. LinkedIn "
+                    "limits how many invitations may carry a note; the "
+                    "allowance may be used up for this account.")
+                return False
+
+            hb.human_click(self.driver, add_note)
+            hb.human_sleep(0.4, 0.9)
+
+            textarea = self._shadow_textarea()
+            if not textarea:
+                logger.warning("  ↳ 'Add a note' opened no note field")
+                return False
+
+            hb.type_like_human(self.driver, textarea, self.note_text)
+            hb.human_sleep(0.3, 0.7)
+
+            send = self._shadow_button(self.SEND_LABELS)
+            if not send:
+                logger.warning("  ↳ Typed the note but found no Send button")
+                return False
+
+            hb.human_click(self.driver, send)
+            logger.info("  ↳ Sent with a note (%d chars)", len(self.note_text))
+            return True
+
+        except Exception as e:
+            logger.warning("  ↳ Attaching the note failed (%s: %s)",
+                           type(e).__name__, e)
+            return False
 
     def _click_send_without_note(self) -> bool:
         """Find and click 'Send without a note' — it lives inside the shadow DOM
@@ -1440,6 +1587,12 @@ Examples:
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name')
     parser.add_argument('--note', type=str, default=None,
                         help='Note to add to connection requests (default: connector.note_template from profile config)')
+    parser.add_argument('--send-without-note-if-needed', action='store_true',
+                        help='If a note is set but cannot be attached, send the '
+                             'request without it. Off by default: an invite '
+                             'cannot be recalled and the weekly allowance is '
+                             'finite, so a bare invite the operator did not '
+                             'write is the more expensive mistake.')
     parser.add_argument('--stats', action='store_true', help='Show daily/weekly connection stats and exit')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
@@ -1477,7 +1630,8 @@ Examples:
         max_requests=args.max,
         add_note=None,
         note_text=args.note,
-        debug=args.debug
+        debug=args.debug,
+        send_without_note_fallback=args.send_without_note_if_needed or None,
     )
 
     results = connector.run(args.search_url, max_pages=args.pages)

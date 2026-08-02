@@ -134,6 +134,11 @@ def test_connector_captures_send_modal_missing(monkeypatch):
 
     c = ac.LinkedInAutoConnector.__new__(ac.LinkedInAutoConnector)
     c.profile_name = "jeff"
+    # __new__ skips the constructor, so the note settings have to be supplied.
+    # Phase 15 made _handle_after_click consult them before doing anything.
+    c.add_note = False
+    c.note_text = ""
+    c.send_without_note_fallback = False
     c.driver = types.SimpleNamespace(current_url="https://www.linkedin.com/search/results/people/")
     monkeypatch.setattr(c, "_click_send_without_note", lambda: False)
     monkeypatch.setattr(c, "_check_limit_warning", lambda: False)
