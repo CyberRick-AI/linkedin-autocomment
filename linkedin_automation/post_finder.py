@@ -1485,6 +1485,12 @@ class LinkedInAIPostFinder:
 
 def main():
     """Main entry point"""
+    # A stop from the dashboard arrives as SIGTERM, and Python skips every
+    # finally block when a signal kills the process. Without this the
+    # driver.quit() below never runs and Chrome is orphaned holding the
+    # profile lock, which blocks every later run and every login.
+    platform_compat.exit_cleanly_on_termination()
+
     import argparse
 
     # Ensure emoji in console output (✅/❌/✓) don't crash under the Windows

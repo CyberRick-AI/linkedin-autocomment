@@ -15,6 +15,7 @@ from selenium.common.exceptions import TimeoutException
 from dotenv import load_dotenv
 
 from . import profile_manager as pm
+from . import platform_compat
 from . import human_behavior as hb
 from .failure_capture import capture_failure
 
@@ -354,6 +355,12 @@ class LinkedInPoster:
 
 def main():
     """CLI entry point: publish a post to the LinkedIn feed."""
+    # A stop from the dashboard arrives as SIGTERM, and Python skips every
+    # finally block when a signal kills the process. Without this the
+    # driver.quit() below never runs and Chrome is orphaned holding the
+    # profile lock, which blocks every later run and every login.
+    platform_compat.exit_cleanly_on_termination()
+
     parser = argparse.ArgumentParser(description='LinkedIn Post Creator')
     parser.add_argument('text', nargs='?', help='Post text (or use --file)')
     parser.add_argument('--file', type=str, help='Read post text from file')

@@ -27,6 +27,7 @@ from selenium.common.exceptions import (
 from dotenv import load_dotenv
 
 from . import profile_manager as pm
+from . import platform_compat
 from . import human_behavior as hb
 from .failure_capture import capture_failure
 from . import atomic_io
@@ -1558,6 +1559,12 @@ class LinkedInAutoConnector:
 
 def main():
     """CLI entry point: send connection requests from a search-results URL."""
+    # A stop from the dashboard arrives as SIGTERM, and Python skips every
+    # finally block when a signal kills the process. Without this the
+    # driver.quit() below never runs and Chrome is orphaned holding the
+    # profile lock, which blocks every later run and every login.
+    platform_compat.exit_cleanly_on_termination()
+
     parser = argparse.ArgumentParser(
         description='LinkedIn Auto-Connector — send connection requests from search results',
         formatter_class=argparse.RawDescriptionHelpFormatter,

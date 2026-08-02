@@ -92,3 +92,63 @@ def describe() -> Optional[str]:
     if IS_WINDOWS:
         return "Windows"
     return sys.platform
+
+
+# ─── Termination ──────────────────────────────────────────────────────────────
+
+# Exit code for "terminated by SIGTERM", by the shell's 128+signal convention.
+# Distinguishable from a crash, which is what lets a caller tell a stop the
+# operator asked for from a failure they did not.
+EXIT_TERMINATED = 143
+
+
+def exit_cleanly_on_termination(signals=None) -> List[str]:
+    """Make SIGTERM and SIGHUP raise ``SystemExit`` so ``finally`` blocks run.
+
+    **Python does not run ``finally`` blocks when the process is killed by a
+    signal.** The default SIGTERM disposition terminates immediately, so every
+    cleanup handler in the call stack is skipped.
+
+    For the browser-driving scripts that means ``driver.quit()`` never runs and
+    Chrome is orphaned, still holding the profile's ``user-data-dir``. Nothing
+    can then open that profile: the next run, and every login attempt, fails
+    because a process nobody can see owns the lock.
+
+    Observed 2026-08-02. Rick pressed Stop during a connector run. The
+    dashboard called ``terminate()``, the connector died without unwinding, and
+    the orphaned Chrome held the profile for the next twenty-three hours. The
+    only visible symptom was "The login check could not run".
+
+    ``sys.exit`` raises ``SystemExit``, which is a ``BaseException``: it
+    unwinds the stack, runs every ``finally``, and is not swallowed by the
+    ``except Exception`` handlers these scripts use around their main loops.
+
+    Returns the names of the signals actually installed, which varies by
+    platform: SIGHUP does not exist on Windows.
+    """
+    import signal
+
+    if signals is None:
+        names = ("SIGTERM", "SIGHUP")
+    else:
+        names = tuple(signals)
+
+    def _bail(signum, _frame):
+        logger.warning(
+            "Received signal %s; shutting down and closing the browser. "
+            "Interrupting again may orphan Chrome and lock the profile.", signum)
+        sys.exit(EXIT_TERMINATED)
+
+    installed = []
+    for name in names:
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _bail)
+            installed.append(name)
+        except (ValueError, OSError, RuntimeError):
+            # Not the main thread, or the platform refuses this signal. Not
+            # fatal: the script simply keeps the default disposition.
+            logger.debug("Could not install a handler for %s", name)
+    return installed
