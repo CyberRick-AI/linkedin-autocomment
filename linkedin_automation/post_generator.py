@@ -403,11 +403,22 @@ Length: {length_instruction}"""
             import requests
             from bs4 import BeautifulSoup  # noqa: F401  # availability check; parsing done in _parse_html
 
+            # No Accept-Encoding. It used to say 'gzip, deflate, br', which
+            # promises Brotli, and requests can only decode Brotli when the
+            # brotli package is installed. Against a server that honours it
+            # (Substack does, but only for the full browser-like header set
+            # below) the response body came back as undecodable binary:
+            # 29KB of noise instead of 188KB of HTML, which parsed to nothing
+            # and looked exactly like a page with no article on it.
+            #
+            # Letting requests set this header itself is the fix that stays
+            # correct: it advertises precisely what the installed codecs can
+            # decode, so installing brotli later widens it safely and not
+            # installing it never over-promises.
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
                 'Sec-Fetch-Dest': 'document',
@@ -421,11 +432,17 @@ Length: {length_instruction}"""
 
             return self._parse_html(resp.text)
 
-        except ImportError:
-            logger.error("Install requests and beautifulsoup4: pip install requests beautifulsoup4")
+        except ImportError as e:
+            logger.error(
+                "Article fetching needs requests and beautifulsoup4, and %s is "
+                "missing. Both are in requirements.txt; reinstall with "
+                "'uv pip install -r requirements.txt'.", e.name or "a dependency")
             return None
         except Exception as e:
-            logger.debug(f"Requests fetch failed: {e}")
+            # Warning, not debug. This is the fast path failing on a URL the
+            # operator explicitly asked for, and at debug it reached nobody.
+            logger.warning("Fetching %s with requests failed (%s: %s); "
+                           "falling back to a browser", url, type(e).__name__, e)
             return None
 
     def _fetch_with_selenium(self, url: str) -> Optional[str]:
@@ -458,7 +475,8 @@ Length: {length_instruction}"""
                 driver.quit()
 
         except Exception as e:
-            logger.debug(f"Selenium fetch failed: {e}")
+            logger.warning("Fetching %s with a browser failed (%s: %s)",
+                           url, type(e).__name__, e)
             return None
 
     def _parse_html(self, html: str) -> Optional[str]:
@@ -525,10 +543,23 @@ Length: {length_instruction}"""
             lines = [line.strip() for line in text.split('\n') if line.strip()]
             text = '\n'.join(lines)
 
-            return f"Title: {title}\n\n{text}" if text else None
+            if not text:
+                # Five extraction strategies all came back empty. Saying so is
+                # the difference between "this page has no article" and the
+                # silence that made a Brotli decoding failure look identical to
+                # one. Both produce a soup with nothing in it; only the log can
+                # tell them apart.
+                logger.warning(
+                    "Parsed %d bytes of HTML but extracted no article text. The "
+                    "page may be JS-rendered, paywalled, or not an article.",
+                    len(html or ""))
+                return None
+
+            return f"Title: {title}\n\n{text}"
 
         except Exception as e:
-            logger.debug(f"HTML parsing failed: {e}")
+            logger.warning("Parsing the article HTML failed (%s: %s)",
+                           type(e).__name__, e)
             return None
 
     def post_next(self, profile_name: str = None) -> bool:

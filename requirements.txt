@@ -5,6 +5,17 @@ openai==2.44.0
 # xAI speaks the OpenAI wire format, so its adapter reuses the openai client
 # with a different base_url and adds no dependency of its own.
 anthropic==0.120.2
+# Article fetching for the post creator's "react to an article" mode.
+# post_generator.py has always imported both; neither was ever declared, so the
+# feature could not work on any clean install including this one. Found
+# 2026-08-02 by Rick pressing Generate from Article.
+#
+# Do NOT add brotli here. requests advertises only the encodings it can decode,
+# and post_generator no longer overrides Accept-Encoding, so the correct set is
+# negotiated automatically. Installing brotli would widen it correctly too;
+# hardcoding a header that promises it is what broke the fast path.
+requests==2.34.2
+beautifulsoup4==4.15.0
 selenium==4.45.0
 webdriver-manager==4.1.2
 # Routes TLS through the OS trust store so OpenAI / webdriver-manager work behind

@@ -144,6 +144,39 @@ def can_start_browser_task(profile):
     return len(get_active_jobs(profile=profile, task_type="browser")) == 0
 
 
+class _JobLogHandler(logging.Handler):
+    """Route a running job's package log records into that job's log.
+
+    In-process jobs call library code directly, and everything that code
+    reported went to the server console rather than to the screen the operator
+    is watching. That is the same defect Phase 5b removed from the dashboard's
+    dialogs: the message was written, was correct, and reached nobody.
+
+    WARNING and above only. Info and debug are tracing, and a job log that
+    scrolls is a job log nobody reads, which is how the useful line gets lost.
+
+    Attached per job and removed in a ``finally``, so records are attributed to
+    the job that produced them. Concurrent jobs each add their own handler and
+    a record emitted while two are running lands in both, which is the honest
+    outcome: this is a module-level logger and it does not know which job's
+    thread it was called from. Over-reporting is recoverable, silence is not.
+    """
+
+    def __init__(self, job_id):
+        super().__init__(level=logging.WARNING)
+        self.job_id = job_id
+
+    def emit(self, record):
+        job = jobs.get(self.job_id)
+        if job is None:
+            return
+        try:
+            job["log"].append(f"{record.levelname}: {record.getMessage()}")
+        except Exception:
+            # A logging handler must never take down the job it is observing.
+            self.handleError(record)
+
+
 def run_job(job_id, func, *args, profile=None, task_type="api", category="", **kwargs):
     """Run a function in a background thread and track its progress."""
     jobs[job_id] = {
@@ -162,6 +195,20 @@ def run_job(job_id, func, *args, profile=None, task_type="api", category="", **k
         """Run the job function in the thread, recording result/error + status."""
         # Record result/error and logs BEFORE flipping status, so a poller that
         # observes a terminal status always sees the accompanying data.
+        #
+        # The handler is what makes an in-process job diagnosable. Jobs that
+        # shell out get their output through run_subprocess, which streams
+        # stdout and logs stderr; jobs that call a library in this process had
+        # no such route, so the job log only ever held what the job function
+        # passed to log_job by hand. Anything the library itself reported went
+        # to the server console and reached nobody.
+        #
+        # Observed 2026-08-02: Generate from Article failed, and the message
+        # naming the exact missing dependency was written by the library at
+        # ERROR level and never shown. The operator saw a ValueError saying the
+        # article could not be fetched, which is true and useless.
+        handler = _JobLogHandler(job_id)
+        logging.getLogger("linkedin_automation").addHandler(handler)
         try:
             result = func(job_id, *args, **kwargs)
             jobs[job_id]["result"] = result
@@ -187,7 +234,11 @@ def run_job(job_id, func, *args, profile=None, task_type="api", category="", **k
             import traceback
             jobs[job_id]["log"].append(f"ERROR: {traceback.format_exc()}")
             jobs[job_id]["status"] = "failed"
-    
+        finally:
+            # Always detached. A handler left attached to a module-level logger
+            # outlives the job and keeps appending to a finished job's log.
+            logging.getLogger("linkedin_automation").removeHandler(handler)
+
     t = threading.Thread(target=wrapper, daemon=True)
     t.start()
     return job_id
