@@ -9,11 +9,22 @@ are all injected, so nothing here starts a real server, binds a real port, or
 waits real seconds.
 """
 
+import os
 import signal
 
 import pytest
 
 from linkedin_automation import server_supervisor as ss
+
+
+# Process groups are POSIX. Phase 14 is a macOS app and Windows is a CI
+# platform for this project rather than a target, so the group-signalling
+# tests are skipped there rather than the behaviour being watered down to
+# something that passes everywhere. The Windows fallback has its own test.
+posix_only = pytest.mark.skipif(
+    not hasattr(os, "killpg"),
+    reason="process groups are POSIX; Windows uses the documented fallback",
+)
 
 
 class FakeProcess:
@@ -133,6 +144,7 @@ def test_a_server_that_never_binds_times_out_rather_than_hanging():
 
 # ─── Stop: the "zero chromedriver processes" criterion ────────────────────────
 
+@posix_only
 def test_stop_signals_the_process_group_not_the_process(monkeypatch):
     """The criterion that makes Quit mean Quit.
 
@@ -160,6 +172,7 @@ def test_stop_signals_the_process_group_not_the_process(monkeypatch):
     assert proc.signals == [], "it signalled the bare process instead of the group"
 
 
+@posix_only
 def test_a_process_that_ignores_sigterm_is_killed(monkeypatch):
     """Escalation, bounded. A stop that gives up silently is not a stop."""
     signalled = []
@@ -183,6 +196,7 @@ def test_a_process_that_ignores_sigterm_is_killed(monkeypatch):
     assert clock.t >= 3.0, "it escalated to SIGKILL without waiting"
 
 
+@posix_only
 def test_stopping_falls_back_to_the_process_when_the_group_is_gone(monkeypatch):
     """A stop that half-works beats a stop that raises into the menu handler."""
     def boom(pid):
@@ -330,3 +344,36 @@ def test_the_server_is_started_in_its_own_session(monkeypatch):
     assert captured["kwargs"]["start_new_session"] is True, (
         "without its own session, stop() cannot signal the chromedriver subtree"
     )
+
+
+# ─── The platform the app does not target ─────────────────────────────────────
+
+@pytest.mark.skipif(hasattr(os, "killpg"), reason="POSIX has process groups")
+def test_on_windows_the_fallback_stops_the_process_and_warns(caplog):
+    """Degrade loudly, not quietly.
+
+    Windows has no process groups, so only the dashboard process is stopped
+    and a chromedriver subtree can survive. That difference is exactly what
+    the group signalling exists to prevent, so it is stated rather than left
+    for someone to discover as a stray Chrome holding a LinkedIn session.
+    """
+    proc = FakeProcess()
+    proc.send_signal = lambda sig: (proc.signals.append(sig), proc.exit())[0]
+    sup, _ = make([False, True], process=proc)
+    sup.start()
+
+    with caplog.at_level("WARNING", logger="linkedin_automation.server_supervisor"):
+        assert sup.stop() is True
+
+    assert proc.signals == [ss.TERM_SIGNAL]
+    assert "by hand" in caplog.text, "the surviving-subtree caveat was not stated"
+
+
+def test_the_kill_signal_exists_on_every_platform():
+    """The escalation path must not raise AttributeError when it is needed.
+
+    ``signal.SIGKILL`` is POSIX-only, and the one place it is referenced is
+    the error path of a stop that is already going badly.
+    """
+    assert ss.TERM_SIGNAL is not None
+    assert ss.KILL_SIGNAL is not None

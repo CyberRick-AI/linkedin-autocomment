@@ -44,6 +44,13 @@ STARTED = "started"
 ALREADY_RUNNING = "already_running"
 FAILED = "failed"
 
+# SIGKILL is POSIX. On Windows there is no uncatchable signal and SIGTERM is
+# already the abrupt one, so the escalation collapses to a single step there
+# rather than raising AttributeError on the error path, which is the worst
+# possible place to discover a missing constant.
+TERM_SIGNAL = signal.SIGTERM
+KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 
 def port_is_serving(port=DEFAULT_PORT, host=HOST, timeout=0.5):
     """True when something accepts a TCP connection on ``host:port``.
@@ -158,7 +165,7 @@ class ServerSupervisor:
             self.process = None
             return True
 
-        self._signal_group(signal.SIGTERM)
+        self._signal_group(TERM_SIGNAL)
 
         deadline = self._now() + timeout
         while self._now() < deadline:
@@ -171,7 +178,7 @@ class ServerSupervisor:
         logger.warning(
             "The dashboard did not stop within %.0fs; killing the process group",
             timeout)
-        self._signal_group(signal.SIGKILL)
+        self._signal_group(KILL_SIGNAL)
         self.process.poll()
         stopped = self.process.poll() is not None
         self.process = None
@@ -201,7 +208,28 @@ class ServerSupervisor:
         )
 
     def _signal_group(self, sig):
-        """Signal the server's whole process group, tolerating a dead group."""
+        """Signal the server's whole process group, tolerating a dead group.
+
+        Process groups are POSIX. Windows has an equivalent (job objects, or
+        ``taskkill /T``) and this does not implement it: Phase 14 is a macOS
+        app and Windows is a CI platform for this project, not a target.
+
+        The Windows path therefore terminates the server process only, and
+        **says so**, because the difference is that a chromedriver subtree can
+        survive. Degrading quietly here would recreate the exact failure the
+        group signalling exists to prevent, just on a platform nobody watches.
+        """
+        if not hasattr(os, "killpg"):
+            logger.warning(
+                "This platform has no process groups, so only the dashboard "
+                "process is being stopped. A chromedriver started by a browser "
+                "job may survive and need closing by hand.")
+            try:
+                self.process.send_signal(sig)
+            except (ProcessLookupError, OSError, ValueError):
+                pass
+            return
+
         try:
             os.killpg(os.getpgid(self.process.pid), sig)
         except (ProcessLookupError, PermissionError, OSError) as e:

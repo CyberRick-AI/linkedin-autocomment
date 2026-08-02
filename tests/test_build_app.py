@@ -41,6 +41,8 @@ def test_the_bundle_has_the_directory_layout_macos_requires(bundle):
     assert os.path.isfile(os.path.join(bundle, "Contents", "MacOS", "launcher"))
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Windows has no executable bit; the bundle is macOS-only")
 def test_the_launcher_is_executable(bundle):
     """Without the executable bit the app fails to open and says nothing.
 
