@@ -32,13 +32,25 @@ jobs:
       - name: Install dependencies
         run: uv pip install -r requirements.txt -r requirements-dev.txt
 
+      # No OPENAI_API_KEY here, deliberately. It used to be set because 26
+      # tests failed without it, which meant the suite's result depended on
+      # ambient environment and could not be reproduced on a clean machine.
+      # Phase 12 moved that into the autouse `provider_keys` fixture, so the
+      # suite now supplies its own fake keys and this step proves it: if the
+      # dependency ever comes back, CI goes red rather than passing quietly.
+      # `-p no:randomly` so the baseline cell is one fixed, reproducible order.
+      # The shuffled runs are the next step.
       - name: Run tests
-        env:
-          # The OpenAI client is constructed at import time, so the suite needs
-          # a key present but never uses it. Deliberately a fake value: no real
-          # secret belongs in CI for a suite that makes no API calls.
-          OPENAI_API_KEY: sk-dummy-for-ci-no-calls-are-made
-        run: uv run pytest tests/ -q
+        run: uv run pytest tests/ -q -p no:randomly
+
+      # ROADMAP Phase 12: the suite must be green under a shuffled order, not
+      # just the one order pytest happens to collect. Three fixed seeds rather
+      # than a random one, so a red cell is reproducible from the log.
+      - name: Run tests under shuffled order
+        run: |
+          uv run pytest tests/ -q --randomly-seed=1
+          uv run pytest tests/ -q --randomly-seed=2
+          uv run pytest tests/ -q --randomly-seed=3
 
       - name: Lint
         run: uv run ruff check .

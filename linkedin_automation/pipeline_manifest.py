@@ -129,7 +129,108 @@ STEPS: List[PipelineStep] = [
         # the stricter rule applies by default.
         requires_linkedin_session=True,
     ),
+
+    # ── The three surfaces added in Phase 12 ──────────────────────────────────
+    # AUDIT E2. ROADMAP.md pins four feature surfaces that every phase must
+    # leave working, and until Phase 12 this manifest declared only the comment
+    # pipeline. The other three were therefore invisible to the drift check
+    # below, to the boundary check, and to anything reading this file to learn
+    # what the system does. None of them has ever been run, by anybody.
+
+    PipelineStep(
+        name="send_connections",
+        module="linkedin_automation.auto_connector",
+        entry_function="main",
+        target="connections/session_*.json",
+        critical_columns=["session", "weekly"],
+        expected_min=0,
+        freshness_minutes=None,
+        upstream=[],
+        downstream=[],
+        data_source="LinkedIn people search via Selenium",
+        known_failure_modes=[
+            "invite-link selector rot: zero targets on a page that has results, "
+            "which is indistinguishable from an empty search without the "
+            "no_connect_links failure capture",
+            "daily or weekly cap already reached: the run exits having sent "
+            "nothing, which is correct and looks identical to a failure",
+            "run() catches every exception and returns partial results, so a "
+            "total failure is reported as a session that sent zero",
+        ],
+        requires_linkedin_session=True,
+    ),
+    PipelineStep(
+        name="generate_post",
+        module="linkedin_automation.post_generator",
+        entry_function="main",
+        target="posts/post_queue.json",
+        critical_columns=["id", "type", "text", "status"],
+        expected_min=0,
+        freshness_minutes=None,
+        upstream=[],
+        downstream=["publish_post", "scheduled_publish"],
+        data_source="LLM provider, or a fetched article URL for reaction posts",
+        known_failure_modes=[
+            "missing or unfunded API key for the configured provider",
+            "article fetch blocked or paywalled, so a reaction post has no source",
+        ],
+        # Generation is provider-side. Publishing is what needs the session.
+        requires_linkedin_session=False,
+    ),
+    PipelineStep(
+        name="publish_post",
+        module="linkedin_automation.poster",
+        entry_function="main",
+        target="posts/post_history.json",
+        critical_columns=["id", "posted_at"],
+        expected_min=0,
+        freshness_minutes=None,
+        upstream=["generate_post"],
+        downstream=[],
+        data_source="LinkedIn via Selenium",
+        known_failure_modes=[
+            "post composer selector rot: the modal never opens, or opens and "
+            "the text is typed but never submitted",
+            "a published post cannot be unpublished quietly, so a duplicate is "
+            "the expensive failure here",
+        ],
+        requires_linkedin_session=True,
+    ),
+    PipelineStep(
+        name="scheduled_publish",
+        module="linkedin_automation.scheduler",
+        entry_function="Scheduler",
+        target=None,
+        expected_min=None,
+        freshness_minutes=None,
+        upstream=["generate_post"],
+        downstream=[],
+        data_source="the post queue, on a randomized twice-daily timer",
+        known_failure_modes=[
+            "runs inside the dashboard process, so closing the dashboard stops "
+            "it silently",
+            "the browser lock is held by a manual run, so a due slot passes "
+            "without firing",
+        ],
+        # The scheduler itself starts no browser: it submits jobs that do, and
+        # those jobs are the steps above. Declaring it False would be defensible
+        # and is deliberately not done, because it *causes* browser work and the
+        # flag exists to keep automated runners away from anything that reaches
+        # LinkedIn.
+        requires_linkedin_session=True,
+    ),
 ]
+
+
+# The feature surfaces ROADMAP.md pins. Every phase must leave all four
+# working, and Phase 12 tests them as a set. Kept here rather than in the test
+# so the manifest is the single place that says what the system does.
+FEATURE_SURFACES: Dict[str, List[str]] = {
+    "comment pipeline": ["scrape_feed", "generate_comments", "post_comments"],
+    "auto connector": ["send_connections"],
+    "post creator": ["generate_post", "publish_post"],
+    "scheduler": ["scheduled_publish"],
+}
 
 
 # ─── Lookups and checks ───────────────────────────────────────────────────────
@@ -156,6 +257,56 @@ def session_required_steps() -> List[PipelineStep]:
 def offline_steps() -> List[PipelineStep]:
     """Return the steps that need no LinkedIn session."""
     return [step for step in STEPS if not step.requires_linkedin_session]
+
+
+# Modules in the package that define ``main`` but are deliberately not pipeline
+# steps. Exempting by name, with a reason, so that adding a step and forgetting
+# to declare it is caught while a genuine non-step does not need the check
+# weakened.
+NON_STEP_MAIN_MODULES: Dict[str, str] = {
+    "dashboard": "the web UI, an operator surface rather than a pipeline step",
+}
+
+
+def undeclared_step_modules(package_dir: Optional[str] = None) -> List[str]:
+    """Return package modules that look like steps but are not declared.
+
+    This is the drift check named in this module's docstring. Until Phase 12
+    it did not exist: :func:`validate` only ever compared the manifest against
+    itself, so the question "does a step exist in the codebase with no manifest
+    entry?" could not be answered here, and three of the four pinned feature
+    surfaces were in fact missing.
+
+    A module counts as a step if it defines a module-level ``main``. Matched on
+    the source text rather than by importing, because importing every module to
+    inspect it would run each one's import-time side effects, and six of them
+    call ``load_dotenv()`` at import.
+    """
+    import os
+    import re
+
+    package_dir = package_dir or os.path.dirname(os.path.abspath(__file__))
+    declared_modules = {step.module.rsplit(".", 1)[-1] for step in STEPS}
+    has_main = re.compile(r"^def main\b", re.MULTILINE)
+
+    undeclared = []
+    for filename in sorted(os.listdir(package_dir)):
+        if not filename.endswith(".py") or filename.startswith("_"):
+            continue
+        stem = filename[:-3]
+        if stem in declared_modules or stem in NON_STEP_MAIN_MODULES:
+            continue
+        path = os.path.join(package_dir, filename)
+        with open(path, "r", encoding="utf-8") as handle:
+            if has_main.search(handle.read()):
+                undeclared.append(stem)
+
+    return undeclared
+
+
+def surface_steps(surface: str) -> List[PipelineStep]:
+    """Return the declared steps making up one pinned feature surface."""
+    return [get(name) for name in FEATURE_SURFACES.get(surface, []) if get(name)]
 
 
 def validate() -> List[str]:
@@ -200,5 +351,17 @@ def validate() -> List[str]:
                 f"{step.name}: expected_min {step.expected_min} exceeds "
                 f"expected_max {step.expected_max}"
             )
+
+    # The pinned feature surfaces must name declared steps. A surface pointing
+    # at a step that was renamed is the same drift this manifest exists to
+    # catch, one level up.
+    for surface, step_names in sorted(FEATURE_SURFACES.items()):
+        if not step_names:
+            problems.append(f"feature surface {surface!r} declares no steps")
+        for name in step_names:
+            if name not in known:
+                problems.append(
+                    f"feature surface {surface!r}: unknown step {name!r}"
+                )
 
     return problems

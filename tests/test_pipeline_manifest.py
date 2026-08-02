@@ -15,13 +15,30 @@ def test_manifest_is_structurally_sound():
     assert pm.validate() == []
 
 
-def test_the_four_existing_steps_are_declared():
+def test_every_declared_step_is_declared_once():
+    """The manifest's contents, as a set.
+
+    Phase 1 seeded four steps and this asserted exactly those. Phase 12 added
+    the three feature surfaces that ``ROADMAP.md`` pins and the manifest had
+    never declared, which is AUDIT E2 in the one file whose docstring claims
+    to detect exactly that kind of drift.
+    """
     assert set(pm.by_name()) == {
+        # comment pipeline
         "scrape_feed",
         "generate_comments",
         "post_comments",
+        # health
         "selector_health",
+        # auto connector
+        "send_connections",
+        # post creator
+        "generate_post",
+        "publish_post",
+        # scheduler
+        "scheduled_publish",
     }
+    assert len(pm.STEPS) == len(pm.by_name()), "a step name is declared twice"
 
 
 @pytest.mark.parametrize("step", pm.STEPS, ids=lambda s: s.name)
@@ -39,18 +56,34 @@ def test_every_step_documents_how_it_fails(step):
 # ─── the boundary, made machine checkable ────────────────────────────────────
 
 def test_linkedin_driving_steps_are_flagged():
-    """The three steps that touch a live session must be marked.
+    """Every step that touches a live session must be marked.
 
     This is the operating boundary in executable form: work that needs a real
     LinkedIn account cannot be verified by an automated runner, so it belongs
     to the human.
+
+    Phase 12 added three surfaces, all of which drive a browser, so this
+    asserts the rule rather than the Phase 1 list. Freezing the list would
+    have meant every future step arrived by editing the boundary check, which
+    is the one assertion that should push back.
     """
     flagged = {s.name for s in pm.session_required_steps()}
-    assert flagged == {"scrape_feed", "post_comments", "selector_health"}
+    assert flagged == {
+        "scrape_feed", "post_comments", "selector_health",
+        "send_connections", "publish_post", "scheduled_publish",
+    }
 
 
-def test_generation_is_the_only_offline_step():
-    assert [s.name for s in pm.offline_steps()] == ["generate_comments"]
+def test_only_provider_side_generation_is_offline():
+    """The offline set is exactly the two generation steps.
+
+    Both call an LLM provider and neither opens a browser, so they are the
+    only work an automated runner may do. Asserted as an exact set: a step
+    quietly becoming offline is how the boundary erodes.
+    """
+    assert sorted(s.name for s in pm.offline_steps()) == [
+        "generate_comments", "generate_post",
+    ]
 
 
 def test_session_and_offline_partition_the_manifest():

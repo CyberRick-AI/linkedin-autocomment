@@ -111,6 +111,58 @@ def redirect_store(monkeypatch, tmp_path):
 
 # ─── Config fallback ──────────────────────────────────────────────────────────
 
+def test_merging_never_shares_structure_with_the_shipped_defaults():
+    """The guard on a cross-profile config leak (Phase 12).
+
+    ``_deep_merge`` used to copy only the top level, so a section the override
+    did not mention was the same object as the one in ``DEFAULT_SCHEDULER``.
+    ``toggle()`` mutates that result in place, so enabling a job for one
+    profile rewrote the defaults every other profile inherits, for the life of
+    the dashboard process.
+
+    Asserted by object identity rather than by value, because the values are
+    equal by design; sharing is the defect.
+    """
+    merged = sched.merge_scheduler_config({})
+
+    for job in sched.JOB_TYPES:
+        assert merged[job] is not sched.DEFAULT_SCHEDULER[job], (
+            f"{job} section is shared with the module-level defaults"
+        )
+        assert merged[job] == sched.DEFAULT_SCHEDULER[job], (
+            f"{job} section was copied but its contents changed"
+        )
+
+    assert merged["post_comments"]["windows"] is not \
+        sched.DEFAULT_SCHEDULER["post_comments"]["windows"]
+
+
+def test_toggling_one_profile_does_not_change_another_profiles_defaults(monkeypatch, tmp_path):
+    """The defect itself, at the call site that caused it.
+
+    One dashboard process serves every profile. Before the fix, turning scrape
+    on for one profile turned it on for every profile that had never
+    configured a scrape section, and the scheduler would then drive a browser
+    against LinkedIn for profiles nobody enabled.
+    """
+    saved = {}
+    monkeypatch.setattr(pm, "save_profile_config",
+                        lambda profile, cfg: saved.__setitem__(profile, cfg))
+
+    engine, _ = make_scheduler(now=Clock(datetime(2026, 7, 7, 0, 5)), config={})
+
+    assert engine.status("profile-b")["jobs"]["scrape"]["enabled"] is False
+
+    engine.toggle("profile-a", "scrape", True)
+
+    assert sched.DEFAULT_SCHEDULER["scrape"]["enabled"] is False, (
+        "toggling a profile rewrote the shipped defaults"
+    )
+    assert engine.status("profile-b")["jobs"]["scrape"]["enabled"] is False, (
+        "a second profile inherited the first profile's toggle"
+    )
+
+
 def test_config_defaults_when_missing():
     """An empty config falls back to the shipped scheduler defaults."""
     engine, _ = make_scheduler(now=Clock(datetime(2026, 7, 7, 0, 5)), config={})

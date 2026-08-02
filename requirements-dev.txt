@@ -3,4 +3,10 @@
 # Validation gates use: uv run pytest tests/ ; uv run ruff check .
 pytest==8.3.4
 pytest-cov==6.0.0
+# Shuffles test order and reseeds the RNG per test. ROADMAP Phase 12 requires
+# the suite to be green across different random seeds, and nothing in the suite
+# read a seed, so "different seeds" was unmeasurable without it. It earned its
+# place immediately: seed 3 exposed a cross-profile config leak in the
+# scheduler that a fixed order had hidden. See DECISIONS.md.
+pytest-randomly==3.16.0
 ruff==0.8.4

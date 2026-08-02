@@ -2,6 +2,11 @@
 
 All fixtures keep tests hermetic: storage is redirected into a temp dir, the
 browser/network boundary is never crossed, and no OpenAI/LinkedIn calls happen.
+
+Phase 12 made that claim enforceable rather than aspirational. See
+``provider_keys`` below: the suite used to read whatever API keys happened to
+be in the developer's environment, so it passed in CI and failed on a clean
+machine.
 """
 
 import pytest
@@ -11,8 +16,49 @@ from linkedin_automation import providers
 from linkedin_automation import dashboard as linkedin_dashboard
 
 
+# Every provider key is pinned to this in tests. It deliberately carries no
+# vendor prefix, so it fails loudly at authentication rather than quietly
+# succeeding and billing someone. That also lets the leak detector in
+# test_suite_hermetic.py look for key-shaped values with no allowlist to
+# maintain: the dummy is outside the shape by construction.
+DUMMY_API_KEY = "not-a-real-key-do-not-bill"
+
 # Canonical activity-URL template used across tests.
 ACTIVITY_URL = "https://www.linkedin.com/feed/update/urn:li:activity:{}/"
+
+
+@pytest.fixture(autouse=True)
+def provider_keys(monkeypatch):
+    """Pin every provider's API key env var to a fake value.
+
+    Two separate defects, found 2026-08-01 while establishing the Phase 12
+    baseline.
+
+    **The suite was not self-contained.** 26 tests construct a generator, which
+    resolves an API key, which raises when none is set. They passed only
+    because CI exports ``OPENAI_API_KEY=sk-dummy``. On a clean machine the
+    suite reported 11 failures and 15 errors against an unchanged, green
+    codebase. A gate whose result depends on ambient environment is not a gate.
+
+    **A real key could reach a test.** ``load_dotenv()`` runs at *import* time
+    in six modules, so importing the package under test loads the developer's
+    ``.env`` into ``os.environ``. Nothing stopped ``resolve_api_key`` from
+    returning a funded key to a test. Nothing spends it today, because every
+    provider call is mocked, but that is one missed mock away from real
+    billing and the protection was incidental rather than designed.
+
+    Pinning rather than clearing, because the common case needs construction
+    to succeed. Tests asserting the missing-key path delete the one variable
+    they care about, which still works.
+    """
+    for spec in providers.SPECS.values():
+        if spec.key_env:
+            monkeypatch.setenv(spec.key_env, DUMMY_API_KEY)
+
+    # The LinkedIn credentials have the same import-time .env exposure, and
+    # profile_manager falls back to them when a profile has no stored password.
+    monkeypatch.delenv("LINKEDIN_USERNAME", raising=False)
+    monkeypatch.delenv("LINKEDIN_PASSWORD", raising=False)
 
 
 @pytest.fixture(autouse=True)

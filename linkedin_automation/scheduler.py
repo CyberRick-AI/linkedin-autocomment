@@ -30,6 +30,7 @@ The engine has no Flask/dashboard imports — the executor (``submit_post_job`` 
 whole thing is unit-testable with a mock clock and no real browser/posting.
 """
 
+import copy
 import os
 import logging
 import random
@@ -87,13 +88,30 @@ ACTION_MISSED = "missed"
 # ─── Config helpers ───────────────────────────────────────────────────────────
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Return ``base`` deep-merged with ``override`` (override wins, dicts merged)."""
-    result = dict(base)
+    """Return ``base`` deep-merged with ``override`` (override wins, dicts merged).
+
+    The copies are deep on purpose. ``dict(base)`` copies only the top level,
+    so any section the override does not mention stayed the *same object* as
+    the one in :data:`DEFAULT_SCHEDULER`. Callers then mutate the result:
+
+    ``toggle()`` does ``sched.setdefault(target, {})["enabled"] = enabled``.
+    For a profile whose config has no ``scrape`` section, that wrote straight
+    through into the module-level defaults, for the life of the process.
+
+    The dashboard is long-running and serves every profile from one process,
+    so enabling scrape for one profile silently enabled it for every other
+    profile that had never configured a scrape section, and the scheduler
+    would then drive a browser against LinkedIn for profiles nobody switched
+    on. Found in Phase 12 by running the suite under a shuffled test order:
+    the defect needs one test to toggle before another reads the defaults, so
+    a fixed order hid it and the ordering that exposed it was seed 3.
+    """
+    result = copy.deepcopy(base)
     for key, value in (override or {}).items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _deep_merge(result[key], value)
         else:
-            result[key] = value
+            result[key] = copy.deepcopy(value)
     return result
 
 
