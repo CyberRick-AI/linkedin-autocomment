@@ -217,7 +217,7 @@ def test_the_app_starts_the_server_and_opens_it():
     opened = []
     sup = FakeSupervisor(ss.STARTED)
 
-    code = macapp.main(argv=[], supervisor=sup,
+    code = macapp.main(argv=[], ui=None, supervisor=sup,
                        opener=lambda url: opened.append(url) or True,
                        alerter=lambda t, m: None)
 
@@ -235,7 +235,7 @@ def test_opening_when_the_server_is_already_up_still_shows_the_dashboard():
     opened = []
     alerts = []
 
-    code = macapp.main(argv=[], supervisor=FakeSupervisor(ss.ALREADY_RUNNING),
+    code = macapp.main(argv=[], ui=None, supervisor=FakeSupervisor(ss.ALREADY_RUNNING),
                        opener=lambda url: opened.append(url) or True,
                        alerter=lambda t, m: alerts.append(m))
 
@@ -249,7 +249,7 @@ def test_a_failed_start_tells_the_user_why_and_does_not_open_a_browser():
     opened = []
     alerts = []
 
-    code = macapp.main(argv=[], supervisor=FakeSupervisor(ss.FAILED),
+    code = macapp.main(argv=[], ui=None, supervisor=FakeSupervisor(ss.FAILED),
                        opener=lambda url: opened.append(url) or True,
                        alerter=lambda t, m: alerts.append(m))
 
@@ -264,7 +264,7 @@ def test_a_browser_that_will_not_open_still_tells_the_user_the_address():
     """Degrade to something actionable rather than to nothing."""
     alerts = []
 
-    code = macapp.main(argv=[], supervisor=FakeSupervisor(ss.STARTED),
+    code = macapp.main(argv=[], ui=None, supervisor=FakeSupervisor(ss.STARTED),
                        opener=lambda url: False,
                        alerter=lambda t, m: alerts.append(m))
 
@@ -276,7 +276,7 @@ def test_the_port_can_be_overridden_on_the_command_line():
     """So a bounded health check never collides with the operator's server."""
     opened = []
 
-    macapp.main(argv=["6501"], supervisor=FakeSupervisor(ss.STARTED),
+    macapp.main(argv=["6501"], ui=None, supervisor=FakeSupervisor(ss.STARTED),
                 opener=lambda url: opened.append(url) or True,
                 alerter=lambda t, m: None)
 
@@ -298,3 +298,109 @@ def test_the_repo_root_is_the_package_parent():
 
     assert os.path.isdir(os.path.join(root, "linkedin_automation"))
     assert os.path.isfile(os.path.join(root, "requirements.txt"))
+
+
+# ─── The Cocoa layer holds no decisions (Phase 14b) ───────────────────────────
+
+def test_the_ui_module_is_not_imported_by_anything_else():
+    """PyObjC is macOS-only and optional. Nothing else may depend on it.
+
+    The dashboard, the CLI tools and this suite all have to run on a machine
+    that never installed requirements-macos.txt, and on Windows in CI.
+    """
+    import pathlib
+
+    package = pathlib.Path(build_app.__file__).parent.parent / "linkedin_automation"
+    offenders = []
+    for path in sorted(package.glob("*.py")):
+        if path.name in ("macapp_ui.py", "macapp.py"):
+            continue
+        # Real import statements only. A docstring naming the module is not
+        # a dependency, and the first version of this test failed on one.
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ")) and "macapp_ui" in stripped:
+                offenders.append(f"{path.name}: {stripped}")
+
+    assert offenders == [], f"these import the Cocoa UI: {offenders}"
+
+
+def test_macapp_imports_the_ui_lazily():
+    """A top-level import would break the package wherever PyObjC is absent."""
+    import pathlib
+
+    source = pathlib.Path(macapp.__file__).read_text(encoding="utf-8")
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("import ", "from ")) and "macapp_ui" in stripped:
+            assert line.startswith("        "), (
+                f"macapp_ui is imported at module scope: {stripped!r}"
+            )
+
+
+def test_the_cocoa_layer_delegates_every_action_to_the_controller():
+    """The split that keeps the app testable.
+
+    Cocoa cannot be exercised headlessly, so any decision made inside the UI
+    module is a decision no test covers. This asserts the UI calls into the
+    controller rather than reimplementing it.
+    """
+    import pathlib
+
+    ui = (pathlib.Path(build_app.__file__).parent.parent
+          / "linkedin_automation" / "macapp_ui.py").read_text(encoding="utf-8")
+
+    assert "self.controller.handle(action)" in ui
+    assert "self.controller.menu()" in ui
+    # The UI must not talk to the supervisor directly; that is the controller's
+    # job, and going around it is how the two drift apart.
+    assert "supervisor.start()" not in ui
+    assert "supervisor.stop()" not in ui
+
+
+def test_the_macos_requirements_are_a_separate_file():
+    """Nobody on Linux or Windows, and not the upstream maintainer, installs
+    a Cocoa binding to run the dashboard."""
+    import pathlib
+
+    root = pathlib.Path(build_app.__file__).parent.parent
+    base = (root / "requirements.txt").read_text(encoding="utf-8").lower()
+    mac = (root / "requirements-macos.txt").read_text(encoding="utf-8").lower()
+
+    assert "pyobjc" not in base, "PyObjC leaked into the cross-platform requirements"
+    assert "pyobjc-framework-cocoa" in mac
+    assert "pyobjc-framework-webkit" in mac
+
+
+def test_the_fallback_runs_when_the_ui_is_unavailable():
+    """A missing optional dependency degrades; it does not fail.
+
+    Without PyObjC the app still starts the dashboard and opens a browser,
+    which is the Phase 14a behaviour and still better than a terminal window
+    you must not close.
+    """
+    opened = []
+
+    code = macapp.main(argv=["--no-ui"], supervisor=FakeSupervisor(ss.STARTED),
+                       opener=lambda url: opened.append(url) or True,
+                       alerter=lambda t, m: None, ui=None)
+
+    assert code == macapp.EXIT_OK
+    assert opened == ["http://localhost:6500"]
+
+
+def test_the_ui_is_handed_the_supervisor_when_it_is_available():
+    """One supervisor, so the menu acts on the server the app started."""
+    handed = {}
+
+    class FakeUI:
+        @staticmethod
+        def run(supervisor=None):
+            handed["supervisor"] = supervisor
+
+    supervisor = FakeSupervisor(ss.STARTED)
+    code = macapp.main(argv=[], supervisor=supervisor, ui=FakeUI,
+                       opener=lambda url: True, alerter=lambda t, m: None)
+
+    assert code == macapp.EXIT_OK
+    assert handed["supervisor"] is supervisor

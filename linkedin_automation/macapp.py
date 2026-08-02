@@ -1,25 +1,21 @@
 """macapp.py — the macOS app entry point.
 
-**Phase 14a: the subset that needs no GUI toolkit.** It starts the dashboard,
-opens it in the browser, and exits, leaving the server running detached in its
-own process group. Phase 14b adds the menu bar item and the native window on
-top of this, which is where the Cocoa dependency arrives.
+``run.command``'s own comment says "Closing this Terminal window stops the
+server", so before this the operator was running a background service inside a
+window they must not touch. This removes the window.
 
-That subset is already the point of the phase. ``run.command``'s own comment
-says "Closing this Terminal window stops the server", so today the operator is
-running a background service inside a window they must not touch. After this,
-there is no window to protect: the app hands the server off and gets out of the
-way.
+Two modes, and which one runs depends only on whether PyObjC is installed:
 
-What it deliberately does **not** do yet, all of it Phase 14b:
+* **With it** (``requirements-macos.txt``): the full app. A menu bar item and
+  a window hosting the dashboard, driven by :mod:`macapp_ui` and
+  :class:`~app_controller.AppController`. Hands off to the Cocoa run loop.
+* **Without it**: start the dashboard, open it in the browser, exit, leaving
+  the server running detached in its own process group. Still better than a
+  terminal window you must not close, so a missing optional dependency
+  degrades rather than fails.
 
-* a menu bar item, so there is currently no Stop from the app
-* a native window, so the dashboard opens in the default browser
-* Quit, which is the counterpart to Stop
-
-Until then the server is stopped the way it always was, and
-:class:`~linkedin_automation.server_supervisor.ServerSupervisor` already
-implements the stop that 14b will call.
+Nothing here imports PyObjC at module scope, so this file, and the rest of the
+package, work on a machine that never installed it — including Windows in CI.
 """
 
 import logging
@@ -90,11 +86,40 @@ def _as_applescript(text):
     return f'"{escaped}"'
 
 
-def main(argv=None, supervisor=None, opener=None, alerter=None):
-    """Start the dashboard if it is not already up, then open it.
+# Sentinel for "work out whether the UI is available". Distinct from None,
+# which a caller passes to mean "definitely no UI" — a test that wants the
+# fallback path must be able to say so without relying on PyObjC being absent
+# from the machine running it.
+_AUTO = object()
+
+
+def load_ui():
+    """Return the Cocoa UI module, or None when PyObjC is not installed.
+
+    Kept as a lookup rather than a top-level import so that everything else in
+    this module — and the whole package — works on a machine without PyObjC.
+    Only ``requirements-macos.txt`` installs it.
+    """
+    try:
+        from . import macapp_ui
+        return macapp_ui
+    except ImportError as e:
+        logger.info("The menu bar UI is unavailable (%s); "
+                    "starting the dashboard and opening a browser instead", e)
+        return None
+
+
+def main(argv=None, supervisor=None, opener=None, alerter=None, ui=_AUTO):
+    """Run the menu bar app, or fall back to start-and-open-a-browser.
 
     Returns an exit code. Every failure path raises a dialog, because the only
     other output this process has is a log file nobody is watching.
+
+    With PyObjC present this hands off to the Cocoa run loop and does not
+    return. Without it, the Phase 14a behaviour remains: start the dashboard,
+    open it, exit, leaving the server running detached. That is still better
+    than a terminal window you must not close, so a missing optional
+    dependency degrades rather than fails.
     """
     argv = argv if argv is not None else sys.argv[1:]
     port = ss.DEFAULT_PORT
@@ -103,6 +128,12 @@ def main(argv=None, supervisor=None, opener=None, alerter=None):
 
     supervisor = supervisor or ss.ServerSupervisor(port=port, cwd=repo_root())
     url = f"http://localhost:{port}"
+
+    if ui is _AUTO:
+        ui = None if "--no-ui" in argv else load_ui()
+    if ui is not None:
+        ui.run(supervisor=supervisor)
+        return EXIT_OK
 
     outcome = supervisor.start()
 
