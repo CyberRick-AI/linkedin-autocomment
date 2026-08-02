@@ -26,6 +26,11 @@ a randomized, human-paced schedule.
 
 > On a Mac? **[docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md)** walks through every
 > step from a clean machine, including the Gatekeeper prompt on first launch.
+>
+> Already running it? **[docs/OPERATING.md](docs/OPERATING.md)** covers start,
+> stop and restart. Read the restart section before you pull an update: a
+> running dashboard does not pick up code changes, and neither relaunching the
+> app nor refreshing the browser restarts it.
 
 On Windows run `setup.bat` (installs deps, creates `.env`, makes `data/`) then
 `run.bat`. On macOS and Linux run `./setup.sh` then `./run.sh` — or on a Mac,
