@@ -84,3 +84,4 @@ Thumbs.db
 # Local databases
 *.db
 *.sqlite3
+dist/
