@@ -310,6 +310,19 @@ class LinkedInAutoConnector:
         self.error_count = 0
         self.pages_processed = 0
 
+        # LinkedIn's "Do you know this person?" email gate. Counted, and
+        # counted *consecutively*, because a run of them in a row is not bad
+        # luck: it is LinkedIn signalling that it does not like the pattern.
+        # Pushing on through that is how an account gets restricted, so the
+        # run stops itself rather than waiting to be stopped.
+        self.email_gate_count = 0
+        self.consecutive_email_gates = 0
+        self.max_consecutive_email_gates = int(
+            conn.get("max_consecutive_email_gates", 3))
+        # Set by _handle_after_click so process_page can record *why* an
+        # invitation was abandoned instead of filing everything as an error.
+        self.last_skip_reason = None
+
         # Stop file: if this file exists, the connector will gracefully stop
         resolved = profile_name or "default"
         self.stop_file = os.path.join(
@@ -750,6 +763,31 @@ class LinkedInAutoConnector:
         # Wait for popup to render (it comes up quick per Jeff)
         hb.human_sleep(0.5, 1.0)
 
+        # Gates come before anything else. Both look like an ordinary invite
+        # popup and neither can be answered by clicking Send.
+        gate = self._detect_gate()
+
+        if gate == "limit":
+            logger.warning("  ⚠️ LinkedIn says the invitation allowance is used "
+                           "up. Stopping the run.")
+            self._close_modal()
+            self.last_skip_reason = "invitation_limit"
+            self.max_requests = self.sent_count      # force the loop to end
+            return False
+
+        if gate == "email_required":
+            self.email_gate_count += 1
+            self.consecutive_email_gates += 1
+            logger.warning(
+                "  ↳ LinkedIn wants this person's email address before it will "
+                "send the invitation (%d in a row, %d this run). Skipping: this "
+                "tool does not supply someone's email to get past a "
+                "verification gate.",
+                self.consecutive_email_gates, self.email_gate_count)
+            self._close_modal()
+            self.last_skip_reason = "email_required"
+            return False
+
         # The note comes first, and it has to, because clicking 'Send without
         # a note' succeeds and ends the flow.
         #
@@ -774,6 +812,11 @@ class LinkedInAutoConnector:
                     "sending without it was not authorised. Dismissing without "
                     "sending. Pass --send-without-note-if-needed to send anyway.")
                 self._close_modal()
+                # A deliberate refusal, not a failure. Recorded as a skip with
+                # its reason so the summary separates "we chose not to" from
+                # "something broke", and so no screenshot is captured for an
+                # outcome that is completely understood.
+                self.last_skip_reason = "note_could_not_be_attached"
                 return False
             logger.warning(
                 "  ↳ Could not attach the note; sending without it because "
@@ -815,6 +858,31 @@ class LinkedInAutoConnector:
     SHADOW_HOST_SELECTOR = "#interop-outlet"
     ADD_NOTE_LABELS = ("Add a note", "Add note")
     SEND_LABELS = ("Send invitation", "Send now", "Send")
+
+    # LinkedIn's "Do you know this person?" verification gate. It asks for the
+    # member's email address before it will deliver the invitation.
+    #
+    # **The email is never supplied.** Guessing or looking up a stranger's
+    # private address to get past a check LinkedIn put there on purpose is not
+    # something this tool does: it is the member's data, and defeating a
+    # human-verification gate by automation is precisely the behaviour that
+    # gets an account restricted. The invitation is abandoned instead.
+    EMAIL_GATE_PHRASES = (
+        "do you know",
+        "enter their email",
+        "email address to connect",
+        "please enter the email",
+        "to verify",
+    )
+    # Phrases meaning the account has run out of invitations, not that this
+    # particular person needs verifying. Checked first: the two dialogs look
+    # similar and the responses are opposite (stop the run vs skip one person).
+    LIMIT_GATE_PHRASES = (
+        "invitation limit",
+        "you've reached",
+        "too many invitations",
+        "weekly invitation",
+    )
 
     def _shadow_button(self, labels):
         """Return the first shadow-root button whose text is in ``labels``."""
@@ -863,6 +931,52 @@ class LinkedInAutoConnector:
             """,
             self.SHADOW_HOST_SELECTOR,
         )
+
+    def _shadow_dialog_text(self) -> str:
+        """Return the visible text of the popup, wherever its shadow root is.
+
+        ``_find_modal`` cannot see any of this: it uses ordinary Selenium
+        selectors and the current dialogs live inside a shadow root. The
+        legacy modal path already handled the email gate; it was simply
+        unreachable, which is why the gate presented as a generic failure.
+        """
+        try:
+            return (self.driver.execute_script(
+                """
+                var host = document.querySelector(arguments[0]);
+                var roots = [];
+                if (host && host.shadowRoot) { roots.push(host.shadowRoot); }
+                var all = document.querySelectorAll('*');
+                for (var i = 0; i < all.length; i++) {
+                    if (all[i].shadowRoot) { roots.push(all[i].shadowRoot); }
+                }
+                var text = '';
+                for (var r = 0; r < roots.length; r++) {
+                    text += ' ' + (roots[r].textContent || '');
+                }
+                return text;
+                """,
+                self.SHADOW_HOST_SELECTOR,
+            ) or "").lower()
+        except Exception as e:
+            logger.debug("Could not read the popup text: %s", e)
+            return ""
+
+    def _detect_gate(self) -> Optional[str]:
+        """Return ``'limit'``, ``'email_required'`` or None for the open popup.
+
+        Limit is checked first because the two dialogs read similarly and the
+        correct responses are opposite: a limit means stop the whole run, an
+        email gate means skip this one person and carry on.
+        """
+        text = self._shadow_dialog_text()
+        if not text:
+            return None
+        if any(phrase in text for phrase in self.LIMIT_GATE_PHRASES):
+            return "limit"
+        if any(phrase in text for phrase in self.EMAIL_GATE_PHRASES):
+            return "email_required"
+        return None
 
     def _send_with_note(self) -> bool:
         """Attach the configured note, then send. True only if it actually sent.
@@ -1435,7 +1549,26 @@ class LinkedInAutoConnector:
                     self.tracker.record_sent(info["name"], info["profile_url"], info["title"])
                     self.sent_count += 1
                     sent_this_page += 1
+                    self.consecutive_email_gates = 0
+                    self.last_skip_reason = None
                     logger.info(f"  ✓ Connection request sent! ({self.sent_count}/{self.max_requests})")
+                elif self.last_skip_reason:
+                    # A gate, not a failure. Recorded as a skip with its reason
+                    # so the session summary distinguishes "LinkedIn would not
+                    # let us" from "something broke", and so a screenshot is
+                    # not captured for an outcome that is fully understood.
+                    reason = self.last_skip_reason
+                    self.tracker.record_skip(info["name"], info["profile_url"], reason)
+                    self.skipped_count += 1
+                    self.last_skip_reason = None
+                    if (reason == "email_required"
+                            and self.consecutive_email_gates >= self.max_consecutive_email_gates):
+                        logger.warning(
+                            "  ⛔ %d invitations in a row needed email "
+                            "verification. LinkedIn is gating this pattern, so "
+                            "the run is stopping rather than pushing through it.",
+                            self.consecutive_email_gates)
+                        return sent_this_page
                 else:
                     self.tracker.record_error(info["name"], info["profile_url"], "connect_failed")
                     self.error_count += 1
@@ -1534,6 +1667,7 @@ class LinkedInAutoConnector:
                 "sent": self.sent_count,
                 "skipped": self.skipped_count,
                 "errors": self.error_count,
+                "email_gates": self.email_gate_count,
                 "pages_processed": self.pages_processed + 1
             },
             "weekly": stats,
