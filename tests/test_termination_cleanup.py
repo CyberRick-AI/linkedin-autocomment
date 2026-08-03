@@ -47,6 +47,19 @@ def test_the_terminated_exit_code_is_distinguishable():
     assert pc.EXIT_TERMINATED == 143
 
 
+# Windows cannot do this at all. Popen.terminate() there calls
+# TerminateProcess, which is uncatchable: no handler runs, no finally runs,
+# and no signal handler can change that. That is precisely why
+# server_supervisor's Windows path warns that a chromedriver subtree may
+# survive rather than pretending it cleaned up. Skipped rather than weakened,
+# because the property genuinely does not hold there.
+posix_signals_only = pytest.mark.skipif(
+    os.name == "nt",
+    reason="TerminateProcess is uncatchable on Windows; no finally can run",
+)
+
+
+@posix_signals_only
 @pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="needs SIGTERM")
 def test_sigterm_runs_finally_blocks_in_a_real_subprocess(tmp_path):
     """The actual property, proven end to end rather than by reading the docs.
@@ -93,6 +106,7 @@ def test_sigterm_runs_finally_blocks_in_a_real_subprocess(tmp_path):
     assert proc.returncode == pc.EXIT_TERMINATED
 
 
+@posix_signals_only
 @pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="needs SIGTERM")
 def test_without_the_handler_the_finally_is_skipped(tmp_path):
     """Proven to fail: the same child, minus the handler, loses its cleanup.

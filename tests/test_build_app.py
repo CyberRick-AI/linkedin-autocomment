@@ -534,6 +534,8 @@ def test_installing_replaces_a_stale_copy(tmp_path):
     assert "/repo/old" not in body, "the stale bundle survived the reinstall"
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Windows has no executable bit; the bundle is macOS-only")
 def test_the_executable_bit_survives_the_copy(tmp_path):
     """Lose it and the installed app fails to open, silently."""
     source = build_app.build_bundle(str(tmp_path / "dist"), "/fake/repo")
