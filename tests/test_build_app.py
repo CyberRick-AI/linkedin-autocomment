@@ -404,3 +404,49 @@ def test_the_ui_is_handed_the_supervisor_when_it_is_available():
 
     assert code == macapp.EXIT_OK
     assert handed["supervisor"] is supervisor
+
+
+def test_the_window_is_not_shown_before_the_run_loop_exists():
+    """The bug that made the app launch invisibly (Phase 14b).
+
+    ``run()`` used to call ``controller.start()``, which shows the window,
+    before ``app.run()``. Ordering a window front with no event loop running
+    does nothing at all: the app launched, the dashboard came up, and neither
+    a window nor any error appeared. The only visible evidence was a process
+    in ``ps``.
+
+    The start now happens in ``applicationDidFinishLaunching_``, which fires
+    after the loop is up. Asserted on the source because the alternative is a
+    running Cocoa event loop, which a headless suite cannot have.
+    """
+    import pathlib
+
+    ui = (pathlib.Path(build_app.__file__).parent.parent
+          / "linkedin_automation" / "macapp_ui.py").read_text(encoding="utf-8")
+
+    run_body = ui.split("def run(", 1)[1]
+    assert "controller.start()" not in run_body, (
+        "run() shows the window before the event loop exists; the window "
+        "never appears"
+    )
+    assert "startOnLaunch" in run_body
+    assert "startOnLaunch" in ui.split("def applicationDidFinishLaunching_", 1)[1]
+
+
+def test_the_status_item_never_ends_up_blank():
+    """A status item with no image and no title cannot be found or clicked.
+
+    The first version set a bare text glyph, which existed and reported
+    visible and was still effectively invisible in a crowded menu bar. It now
+    prefers an SF Symbol and falls back to the glyph, but it must never do
+    neither.
+    """
+    import pathlib
+
+    ui = (pathlib.Path(build_app.__file__).parent.parent
+          / "linkedin_automation" / "macapp_ui.py").read_text(encoding="utf-8")
+
+    refresh = ui.split("def _refresh_glyph", 1)[1]
+    assert "setImage_(image)" in refresh
+    assert "setTitle_(glyph)" in refresh, "there is no fallback when the symbol is missing"
+    assert "setTemplate_(True)" in refresh, "a non-template image ignores dark mode"

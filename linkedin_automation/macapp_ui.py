@@ -25,9 +25,19 @@ from . import app_controller as ctrl
 
 logger = logging.getLogger(__name__)
 
-# The status bar glyph. A template image would be better but needs an asset in
-# the bundle; a text glyph inherits the menu bar's colour automatically and
-# survives light and dark mode with no work.
+# SF Symbols, which is what other menu bar apps use. The first version set a
+# text glyph instead, and it worked in the sense that the status item existed
+# and reported visible: it was simply too small and too anonymous to find in a
+# crowded menu bar. A symbol is recognisably an app icon.
+#
+# Filled means running, outlined means stopped, so the state reads at a glance
+# without a colour that would fail in dark mode or for a colourblind operator.
+SYMBOL_RUNNING = "person.2.circle.fill"
+SYMBOL_STOPPED = "person.2.circle"
+SYMBOL_BUSY = "ellipsis.circle"
+
+# Fallback if the symbol is unavailable. Never leave the button blank: a
+# status item with no content is a control the operator cannot find at all.
 GLYPH_RUNNING = "◉"
 GLYPH_STOPPED = "○"
 GLYPH_BUSY = "◌"
@@ -106,12 +116,24 @@ class AppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, notification):
         self.statusItem = (AppKit.NSStatusBar.systemStatusBar()
                            .statusItemWithLength_(AppKit.NSVariableStatusItemLength))
+        # Retained explicitly. NSApplication holds its delegate weakly, and a
+        # status item whose owner is collected disappears from the menu bar
+        # with no error anywhere.
+        self.retain()
         self.menu = AppKit.NSMenu.alloc().init()
         # Rebuild on every open so enabled/disabled always reflects reality
         # rather than whatever was true when the app launched.
         self.menu.setDelegate_(self)
         self.statusItem.setMenu_(self.menu)
         self._refresh_glyph()
+
+        # Now that the run loop is up, a window can actually be displayed.
+        if getattr(self, "startOnLaunch", False):
+            try:
+                self.controller.start()
+            except Exception:
+                logger.exception("Starting the dashboard on launch failed")
+            self._refresh_glyph()
 
     def applicationShouldTerminate_(self, sender):
         # Quit stops the server if this app started it. Doing it here rather
@@ -162,12 +184,27 @@ class AppDelegate(NSObject):
 
     def _refresh_glyph(self):
         state = self.controller.state()
+        symbol = {ctrl.RUNNING: SYMBOL_RUNNING,
+                  ctrl.BUSY: SYMBOL_BUSY}.get(state, SYMBOL_STOPPED)
         glyph = {ctrl.RUNNING: GLYPH_RUNNING,
                  ctrl.BUSY: GLYPH_BUSY}.get(state, GLYPH_STOPPED)
+
         button = self.statusItem.button()
-        if button is not None:
+        if button is None:
+            return
+
+        image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+            symbol, "LinkedIn Autocomment")
+        if image is not None:
+            # Template so it follows the menu bar's own colour in light and
+            # dark mode rather than being drawn as a fixed-colour bitmap.
+            image.setTemplate_(True)
+            button.setImage_(image)
+            button.setTitle_("")
+        else:
+            button.setImage_(None)
             button.setTitle_(glyph)
-            button.setToolTip_(self.controller.status_title())
+        button.setToolTip_(self.controller.status_title())
 
 
 def run(supervisor=None):
@@ -191,8 +228,10 @@ def run(supervisor=None):
     delegate = AppDelegate.alloc().initWithController_(controller)
     app.setDelegate_(delegate)
 
-    # Start the server on launch, so opening the app is one action rather than
-    # open-then-press-Start.
-    controller.start()
+    # Deliberately NOT started here. start() shows the window, and ordering a
+    # window front before the run loop exists does nothing at all: the app
+    # launched, the server came up, and neither the window nor any error
+    # appeared. Observed 2026-08-02. The delegate does it after launch instead.
+    delegate.startOnLaunch = True
 
     app.run()
