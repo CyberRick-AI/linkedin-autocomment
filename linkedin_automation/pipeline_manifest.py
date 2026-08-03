@@ -265,6 +265,10 @@ def offline_steps() -> List[PipelineStep]:
 # weakened.
 NON_STEP_MAIN_MODULES: Dict[str, str] = {
     "dashboard": "the web UI, an operator surface rather than a pipeline step",
+    "restart_helper": (
+        "a one-shot helper that restarts the dashboard. It outlives the server "
+        "rather than being run by it, and produces no records"
+    ),
     "macapp": (
         "the macOS app entry point. It starts and stops the dashboard and "
         "runs nothing itself, so it owns no target and produces no records"

@@ -122,6 +122,11 @@ _subprocess_env['PYTHONUNBUFFERED'] = '1'
 
 # ─── Job Tracking ─────────────────────────────────────────────────────────────
 
+# How long to let the restart response reach the browser before exiting. Named
+# rather than inline so a test can shorten it without patching time.sleep,
+# which is shared and would disable the test's own waiting.
+RESTART_GRACE_SECONDS = 0.7
+
 jobs = {}  # job_id -> {status, progress, result, error, log, profile, task_type}
 
 # Task types:
@@ -1436,6 +1441,59 @@ def start_connector(profile_name):
     run_job(job_id, do_connect, profile_name, search_url, max_requests, max_pages, note,
             profile=profile_name, task_type="browser", category="connector")
     return jsonify({"job_id": job_id})
+
+
+@app.route('/api/restart', methods=['POST'])
+def restart_dashboard():
+    """Restart the server so it picks up new code.
+
+    A running dashboard does not pick up code changes: Flask's reloader only
+    runs in debug mode, and debug mode is off by default because it ships the
+    Werkzeug debugger. So every update needs a restart, and until now that
+    meant a terminal or a menu bar item that does not always appear.
+
+    A server cannot restart itself, so a detached helper does the second half:
+    it waits for this process to exit, waits for the port to free, and starts
+    a replacement.
+
+    **Refused while a browser job is running.** Killing this process mid-scrape
+    orphans a Chrome holding the profile, which then blocks every later run and
+    every login with a message that names none of that. Waiting is cheap; that
+    is not.
+    """
+    busy = get_active_jobs(task_type="browser")
+    if busy:
+        names = ", ".join(sorted({j.get("category") or "browser job"
+                                  for j in busy.values()}))
+        return jsonify({
+            "error": f"A browser task is still running ({names}). Wait for it "
+                     f"to finish, or stop it, then restart.",
+        }), 409
+
+    port = get_port()
+    helper = [sys.executable, "-m", "linkedin_automation.restart_helper",
+              str(os.getpid()), str(port)]
+    try:
+        subprocess.Popen(
+            helper, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.error("Could not start the restart helper: %s", e)
+        return jsonify({"error": f"Could not start the restart helper: {e}"}), 500
+
+    def _shutdown():
+        # Give the response time to reach the browser. os._exit rather than a
+        # graceful shutdown because Werkzeug removed the in-request shutdown
+        # hook, and there is nothing here worth unwinding: jobs run as
+        # subprocesses and the check above proved none is a browser job.
+        time.sleep(RESTART_GRACE_SECONDS)
+        logger.info("Restarting on request")
+        os._exit(0)
+
+    threading.Thread(target=_shutdown, daemon=True).start()
+    return jsonify({"restarting": True, "port": port})
 
 
 @app.route('/api/connector/<profile_name>/stop', methods=['POST'])
