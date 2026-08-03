@@ -17,8 +17,13 @@ for three reasons:
 
 The bundle is a build output. It is written to ``dist/`` and never committed.
 
+The bundle records the project's location at build time, so it is built on the
+machine that will run it rather than copied between machines. That is also why
+sending someone the .app alone does not work: it would point at a project
+folder they do not have.
+
 Usage:
-    python tools/build_app.py [--dest DIR]
+    python tools/build_app.py [--dest DIR] [--install]
 """
 
 import argparse
@@ -137,10 +142,57 @@ def build_bundle(dest_dir, repo_root, app_name=APP_NAME):
     return bundle
 
 
+APPLICATIONS = "/Applications"
+
+
+def install_to_applications(bundle, applications=APPLICATIONS):
+    """Copy the bundle into /Applications. Returns the path, or None on failure.
+
+    Replaces any existing copy, because the launcher inside records a project
+    path and a stale bundle points at wherever the project used to be.
+
+    Uses a temporary name then a rename, so an interrupted copy cannot leave a
+    half-written application sitting in /Applications looking installed.
+    """
+    import shutil
+
+    # Refuse rather than create it. /Applications always exists on macOS, so a
+    # missing destination means the path is wrong, and copytree would happily
+    # build the whole tree and report success having installed the app
+    # somewhere nobody will look.
+    if not os.path.isdir(applications):
+        print(f"Not a directory: {applications}")
+        return None
+
+    name = os.path.basename(bundle)
+    target = os.path.join(applications, name)
+    staging = os.path.join(applications, f".{name}.incoming")
+
+    try:
+        if os.path.exists(staging):
+            shutil.rmtree(staging)
+        shutil.copytree(bundle, staging, symlinks=True)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.rename(staging, target)
+        return target
+    except (OSError, shutil.Error) as e:
+        logger_msg = f"Could not install into {applications}: {e}"
+        print(logger_msg)
+        try:
+            if os.path.exists(staging):
+                shutil.rmtree(staging)
+        except OSError:
+            pass
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dest", default="dist",
                         help="Directory to write the bundle into (default: dist)")
+    parser.add_argument("--install", action="store_true",
+                        help="Also copy the bundle into /Applications")
     args = parser.parse_args()
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -148,13 +200,23 @@ def main():
     os.makedirs(dest, exist_ok=True)
 
     bundle = build_bundle(dest, repo_root)
-
     print(f"Built: {bundle}")
+
+    if args.install:
+        installed = install_to_applications(bundle)
+        if installed is None:
+            print()
+            print(f"Could not copy into {APPLICATIONS}. Drag it there yourself:")
+            print(f"  {bundle}")
+        else:
+            print(f"Installed: {installed}")
+
     print()
     print("It is unsigned, so the first open is blocked by Gatekeeper.")
     print("Right-click the app and choose Open, then confirm. Once only.")
-    print()
-    print("To install it: drag it into /Applications.")
+    if not args.install:
+        print()
+        print("To install it: drag it into /Applications, or re-run with --install.")
     return 0
 
 

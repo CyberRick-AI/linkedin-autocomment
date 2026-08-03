@@ -477,3 +477,82 @@ def test_the_dock_icon_can_be_turned_off(monkeypatch):
 
     monkeypatch.setenv(macapp_ui.DOCK_ICON_ENV, "no")
     assert macapp_ui.wants_dock_icon() is True
+
+
+# ─── Installing into /Applications (Phase 14b) ────────────────────────────────
+
+def test_installing_copies_the_whole_bundle(tmp_path):
+    """The .app is a directory, so this is a tree copy, not a file move."""
+    source = build_app.build_bundle(str(tmp_path / "dist"), "/fake/repo")
+    applications = tmp_path / "Applications"
+    applications.mkdir()
+
+    installed = build_app.install_to_applications(source, str(applications))
+
+    assert installed == str(applications / "LinkedIn Autocomment.app")
+    assert os.path.isfile(os.path.join(installed, "Contents", "MacOS", "launcher"))
+    assert os.path.isfile(os.path.join(installed, "Contents", "Info.plist"))
+
+
+def test_installing_replaces_a_stale_copy(tmp_path):
+    """A bundle records where the project lives, so an old copy points at the
+    wrong folder and must be replaced rather than merged into."""
+    applications = tmp_path / "Applications"
+    applications.mkdir()
+
+    first = build_app.build_bundle(str(tmp_path / "one"), "/repo/old")
+    build_app.install_to_applications(first, str(applications))
+
+    second = build_app.build_bundle(str(tmp_path / "two"), "/repo/new")
+    installed = build_app.install_to_applications(second, str(applications))
+
+    launcher = os.path.join(installed, "Contents", "MacOS", "launcher")
+    with open(launcher, encoding="utf-8") as handle:
+        body = handle.read()
+    assert "/repo/new" in body
+    assert "/repo/old" not in body, "the stale bundle survived the reinstall"
+
+
+def test_the_executable_bit_survives_the_copy(tmp_path):
+    """Lose it and the installed app fails to open, silently."""
+    source = build_app.build_bundle(str(tmp_path / "dist"), "/fake/repo")
+    applications = tmp_path / "Applications"
+    applications.mkdir()
+
+    installed = build_app.install_to_applications(source, str(applications))
+
+    mode = os.stat(os.path.join(installed, "Contents", "MacOS", "launcher")).st_mode
+    assert mode & stat.S_IXUSR
+
+
+def test_a_failed_install_leaves_nothing_half_written(tmp_path):
+    """Interrupted or refused, /Applications must not gain a broken app.
+
+    A partially copied bundle looks installed and fails at click time with no
+    explanation, which is the worst of both outcomes.
+    """
+    source = build_app.build_bundle(str(tmp_path / "dist"), "/fake/repo")
+
+    result = build_app.install_to_applications(
+        source, str(tmp_path / "does-not-exist"))
+
+    assert result is None
+    assert not (tmp_path / "does-not-exist").exists()
+
+
+def test_the_installer_builds_the_app_on_the_users_own_machine():
+    """Why a prebuilt .app cannot simply be emailed to a beta tester.
+
+    The launcher records this project's path. A bundle built on one machine
+    points at a folder the next machine does not have, so the installer builds
+    it locally instead of shipping one.
+    """
+    import pathlib
+
+    installer = (pathlib.Path(build_app.__file__).parent.parent
+                 / "install.command").read_text(encoding="utf-8")
+
+    assert "tools/build_app.py --install" in installer
+    assert "requirements-macos.txt" in installer, (
+        "the installer never installs the extras the window needs"
+    )
