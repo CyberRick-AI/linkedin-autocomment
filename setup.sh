@@ -45,10 +45,12 @@ echo
 echo "============================================"
 echo "  Setup complete!"
 echo
-echo "  Next steps:"
-echo "  1. Edit .env with your OpenAI API key"
-echo "  2. Add a profile: uv run python -m linkedin_automation.profile_manager add <name>"
-echo "  3. Log in once:   uv run python tools/login_check.py --profile <name>"
-echo "  4. Run: uv run python -m linkedin_automation.dashboard  (or ./run.sh)"
-echo "  5. Open: http://localhost:6500"
+echo "  Next steps — all of them in the dashboard, no terminal needed:"
+echo
+echo "  1. Start it:  ./run.sh      (then open http://localhost:6500)"
+echo "  2. Press + in the header to create a profile."
+echo "  3. Open Settings, choose a provider, paste your API key."
+echo "  4. Press 'Log in' and sign in to LinkedIn in the window that opens."
+echo
+echo "  On a Mac, install.command builds an app so you can skip step 1."
 echo "============================================"

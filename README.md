@@ -27,6 +27,10 @@ a randomized, human-paced schedule.
 > On a Mac? **[docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md)** walks through every
 > step from a clean machine, including the Gatekeeper prompt on first launch.
 >
+> Beta testing this? **[docs/BETA-TESTER-GUIDE.md](docs/BETA-TESTER-GUIDE.md)**
+> is the whole setup in order, including which AI provider to pick and the
+> right-click you need on first launch.
+>
 > Already running it? **[docs/OPERATING.md](docs/OPERATING.md)** covers start,
 > stop and restart. Read the restart section before you pull an update: a
 > running dashboard does not pick up code changes, and neither relaunching the
@@ -47,23 +51,24 @@ uv venv
 uv pip install -r requirements.txt
 uv pip install -r requirements-dev.txt   # test/lint tooling (optional)
 
-# 3. Set up credentials
-copy .env.example .env
-# Edit .env with your OpenAI API key
-
-# 4. Add a LinkedIn profile (prompts for username/password; special chars OK)
-uv run python -m linkedin_automation.profile_manager add <name>
-
-# 5. Log in once (opens Chrome; log in, then close it — the session persists)
-uv run python tools/login_check.py --profile <name>
-
-# 6. Launch dashboard
+# 3. Launch the dashboard
 uv run python -m linkedin_automation.dashboard
 # Open http://localhost:6500
 ```
 
-> If a scrape/post/connect run reports **"Login required. Run tools/login_check.py
-> --profile <name>"**, your LinkedIn session has expired — re-run step 5.
+Everything else is in the dashboard, and none of it needs a terminal:
+
+1. **+** in the header creates a profile.
+2. **Settings** picks an AI provider and stores your API key in the OS
+   credential store. Any of eleven providers, or **Custom
+   (OpenAI-compatible)** for one that is not listed. `.env` still works as a
+   fallback.
+3. **Log in** opens Chrome on LinkedIn's own sign-in page. Your password goes
+   to LinkedIn and never passes through this app. The session persists for
+   weeks.
+
+> If a scrape/post/connect run reports **"Login required"**, the session has
+> expired — press **Log in** again.
 
 ## Project Structure
 

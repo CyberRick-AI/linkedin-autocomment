@@ -21,6 +21,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
 from tools import build_app  # noqa: E402
 
 
+def _pyobjc_available():
+    try:
+        import AppKit  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# The Cocoa UI needs PyObjC, which is macOS-only and installed separately from
+# requirements-macos.txt. Tests that import it must skip without it, or the
+# suite starts depending on the optional dependency the whole split exists to
+# avoid. Found by the Phase 13 clean checkout: setup.sh does not install the
+# extras, so these two failed on a fresh clone and would have failed in CI.
+needs_pyobjc = pytest.mark.skipif(
+    not _pyobjc_available(),
+    reason="PyObjC is macOS-only; install requirements-macos.txt",
+)
+
+
 @pytest.fixture
 def bundle(tmp_path):
     """Build a real bundle into tmp, pointing at a fake repo root."""
@@ -87,6 +106,7 @@ def test_it_ships_a_dock_tile():
     assert plist["LSUIElement"] is False
 
 
+@needs_pyobjc
 def test_the_accessory_behaviour_is_still_reachable():
     """Menu-bar-only remains available for anyone who wants it."""
     from linkedin_automation import macapp_ui
@@ -464,6 +484,7 @@ def test_the_status_item_never_ends_up_blank():
     assert "setTemplate_(True)" in refresh, "a non-template image ignores dark mode"
 
 
+@needs_pyobjc
 def test_the_dock_icon_can_be_turned_off(monkeypatch):
     """Default on, because discoverability is the problem being solved."""
     from linkedin_automation import macapp_ui
