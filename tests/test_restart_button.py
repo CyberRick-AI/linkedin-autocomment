@@ -235,3 +235,68 @@ def test_the_handler_survives_the_server_exiting_mid_request():
 
     assert "catch" in handler
     assert "waitForDashboard" in handler
+
+
+# ─── The scrape panel describes what it will actually look for ────────────────
+
+def _template(strip_comments=False):
+    import pathlib
+    import re
+
+    html = (pathlib.Path(dash.__file__).parent / "templates" / "dashboard.html"
+            ).read_text(encoding="utf-8")
+    if strip_comments:
+        # What matters is text the operator can read. A comment recording why
+        # the old wording was wrong is not a regression, and the first version
+        # of this test failed on its own explanation.
+        html = re.sub(r"<!--.*?-->", "", html, flags=re.S)
+        html = re.sub(r"^\s*//.*$", "", html, flags=re.M)
+    return html
+
+
+def test_the_ui_does_not_claim_to_only_find_ai_posts():
+    """The scrape panel said "Find AI discussion posts on your LinkedIn feed".
+
+    That described the shipped default keywords as though they were fixed
+    behaviour. For anyone whose niche is not AI it is simply wrong, and it
+    hides the fact that the keywords are the control. Rick asked whether that
+    line was a search field; it was neither a field nor accurate.
+    """
+    html = _template(strip_comments=True)
+
+    assert "Find AI discussion posts" not in html
+    assert "random AI/automation topic" not in html
+    assert "connect about AI and machine learning" not in html
+
+
+def test_the_scrape_subtitle_is_filled_from_the_profile_keywords():
+    """It names the actual keywords, so the control is discoverable."""
+    html = _template()
+
+    assert 'id="scrapeSubtitle"' in html
+    assert "refreshScrapeSubtitle" in html
+
+    body = html.split("async function refreshScrapeSubtitle", 1)[1].split("\n}", 1)[0]
+    assert "keywords_tier1" in body
+    assert "Configure" in body, "it does not say where to change them"
+
+
+def test_the_subtitle_refreshes_on_a_profile_switch_and_after_a_save():
+    """A stale subtitle is worse than a generic one: it would name another
+    profile's keywords, or the ones you just replaced."""
+    html = _template()
+
+    switch = html.split("function switchProfile", 1)[1].split("\n}", 1)[0]
+    assert "refreshScrapeSubtitle" in switch
+
+    save = html.split("async function saveConfig", 1)[1].split("\nasync function", 1)[0]
+    assert "refreshScrapeSubtitle" in save
+
+
+def test_the_subtitle_degrades_quietly():
+    """A failed fetch must leave readable wording, not an error or a blank."""
+    html = _template()
+    body = html.split("async function refreshScrapeSubtitle", 1)[1].split("\n}\n", 1)[0]
+
+    assert "catch" in body
+    assert "No keywords set" in body, "an empty keyword list would render nothing"

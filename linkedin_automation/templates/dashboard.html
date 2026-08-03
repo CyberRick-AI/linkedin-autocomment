@@ -1093,7 +1093,12 @@ header {
     <div class="panel-header">
       <div>
         <div class="panel-title">Scrape Posts</div>
-        <div class="panel-subtitle">Find AI discussion posts on your LinkedIn feed</div>
+        <!-- Filled from the profile's configured keywords. It used to read
+             "Find AI discussion posts", which described the shipped defaults
+             as though they were fixed behaviour. For anyone whose niche is not
+             AI that is simply wrong, and it hides the fact that the keywords
+             are the control. -->
+        <div class="panel-subtitle" id="scrapeSubtitle">Find posts on your LinkedIn feed that match your keywords</div>
       </div>
     </div>
 
@@ -1313,7 +1318,7 @@ header {
     <div class="form-group" style="margin-bottom:1.25rem">
       <label>Connection Note <span style="opacity:0.4">(optional)</span></label>
       <textarea id="connectorNote" class="comment-edit" rows="2"
-                placeholder="Hi! I'd love to connect about AI and machine learning."></textarea>
+                placeholder="Hi! I'd love to connect and hear what you're working on."></textarea>
     </div>
 
     <div class="btn-group">
@@ -1370,7 +1375,7 @@ header {
         </div>
         <div class="form-group" style="margin-bottom:0.75rem">
           <label>Custom Topic <span style="opacity:0.4">(optional)</span></label>
-          <input type="text" id="posterTopic" placeholder="Leave blank for random AI/automation topic">
+          <input type="text" id="posterTopic" placeholder="Leave blank to use a topic from your config">
         </div>
         <div class="settings-row" style="margin-bottom:0.75rem">
           <div class="form-group">
@@ -1749,6 +1754,29 @@ async function loadProfiles() {
   switchProfile();
 }
 
+async function refreshScrapeSubtitle() {
+  // Show what the scraper will actually look for. The keywords live in
+  // Configure, and nothing on this screen said so, which is how somebody
+  // concludes the tool only handles one topic.
+  const el = document.getElementById('scrapeSubtitle');
+  if (!el || !currentProfile) return;
+  try {
+    const res = await fetch(`/api/profiles/${currentProfile}/config`);
+    if (!res.ok) return;
+    const cfg = await res.json();
+    const kw = ((cfg.post_finder || {}).keywords_tier1) || [];
+    if (!kw.length) {
+      el.textContent = 'No keywords set. Open Configure to choose what to look for.';
+      return;
+    }
+    const shown = kw.slice(0, 4).join(', ');
+    const more = kw.length > 4 ? ` and ${kw.length - 4} more` : '';
+    el.textContent = `Looking for posts about ${shown}${more}. Change these in Configure.`;
+  } catch (e) {
+    // Leave the generic wording in place. A subtitle is not worth an error.
+  }
+}
+
 function switchProfile() {
   currentProfile = document.getElementById('profileSelect').value;
   if (!currentProfile) return;
@@ -1763,6 +1791,7 @@ function switchProfile() {
   loadExistingComments();
   loadLifecycle();
   refreshActiveModels();
+  refreshScrapeSubtitle();
 }
 
 async function loadExistingPosts() {
@@ -2026,7 +2055,7 @@ function renderPosts() {
       <div class="empty">
         <div class="empty-icon">◇</div>
         <h3>No posts yet</h3>
-        <p>Run the scraper first to find AI discussion posts</p>
+        <p>Run the scraper first to find posts matching your keywords</p>
       </div>`;
     toolbar.style.display = 'none';
     return;
@@ -2508,6 +2537,9 @@ async function saveConfig() {
     const msg = document.getElementById('configMsg');
     msg.textContent = '✓ Config saved';
     msg.style.display = 'block';
+    // Edited keywords should show on the scrape panel straight away, or the
+    // change looks like it did not take.
+    refreshScrapeSubtitle();
     setTimeout(closeConfigModal, 800);
   } catch(e) {
     showToast('Save failed: ' + e.message, 'error');
