@@ -51,12 +51,16 @@ step was skipped.
 ## Step 2 — Get the code
 
 ```bash
-cd ~/Projects 2>/dev/null || mkdir -p ~/Projects && cd ~/Projects
-git clone --branch phase-14/the-mac-app https://github.com/CyberRick-AI/linkedin-autocomment.git
+mkdir -p ~/Projects && cd ~/Projects
+git clone --branch beta https://github.com/CyberRick-AI/linkedin-autocomment.git
 ```
 
-> **The branch name matters.** The default branch does not have any of this
-> work on it. Copy the command exactly, including `--branch`.
+> **`--branch beta` matters. Do not leave it out.** This is a fork of someone
+> else's project, and the fork's default branch is still the original author's
+> code — none of what you are testing is on it. Copy the command exactly.
+>
+> `beta` is the branch you want and it will stay that way. It moves forward as
+> fixes land, so `git pull` in that folder gets you the latest.
 
 If `git` is missing, macOS will offer to install the developer tools. Accept,
 wait, then run the command again.
@@ -229,6 +233,26 @@ app stops sending rather than sending blank invitations you did not write.
 **It breaks every few months, predictably.** LinkedIn redesigns its pages and
 the tool stops finding things. That is expected, not a defect. The **Check
 Selectors** button tells you whether that has happened.
+
+---
+
+## Getting fixes
+
+This is under active development and you will be sent fixes. To pick them up:
+
+```bash
+cd ~/Projects/linkedin-autocomment
+git pull
+```
+
+Then **quit the app and open it again** — or use **Restart** in its menu.
+
+> A running app does not pick up new code. Nothing warns you about this: it
+> keeps working exactly as it did before, which looks like the fix did not
+> work. If you pull and nothing changes, you have not restarted.
+
+If the update touched dependencies, run `./setup.sh` again. It is safe to
+re-run at any time.
 
 ---
 
