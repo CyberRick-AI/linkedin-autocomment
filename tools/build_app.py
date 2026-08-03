@@ -61,11 +61,19 @@ exec "$PYTHON" -m linkedin_automation.macapp
 def build_info_plist(app_name=APP_NAME, bundle_id=BUNDLE_ID, version=VERSION):
     """Return the ``Info.plist`` contents as a dict.
 
-    ``LSUIElement`` is the key that matters. It makes this an accessory app:
-    no Dock icon, no menu bar takeover, just the status item. Without it a
-    background service appears in the Dock and Cmd-Tab as though it were a
-    document editor, and quitting it from the Dock would stop the server behind
-    the operator's back.
+    ``LSUIElement`` decides whether this is an accessory app (status item only)
+    or an ordinary one (Dock tile and Cmd-Tab). It ships **False**.
+
+    It was True at first, on the reasoning that a background service should not
+    be quittable from the Dock behind the operator's back. Quit now stops the
+    server properly, so that reasoning is spent — and it was buying nothing.
+    A menu bar already holding two dozen icons makes macOS drop the overflow
+    silently, and the app became unreachable: a window with no way back to it
+    once closed. Discoverability beats purity here.
+
+    ``macapp_ui`` sets the activation policy at runtime too, so the module
+    works the same when run outside the bundle, and ``LINKEDIN_APP_NO_DOCK=1``
+    restores the accessory behaviour for anyone who wants it.
     """
     return {
         "CFBundleName": app_name,
@@ -77,8 +85,12 @@ def build_info_plist(app_name=APP_NAME, bundle_id=BUNDLE_ID, version=VERSION):
         "CFBundleExecutable": "launcher",
         "CFBundleIconFile": "icon.icns",
         "LSMinimumSystemVersion": "12.0",
-        # Accessory app: status item only, no Dock tile.
-        "LSUIElement": True,
+        # Dock tile by default. LSUIElement True made this an accessory app
+        # with a status item and nothing else, and on a menu bar already
+        # holding two dozen icons macOS dropped the overflow, so there was no
+        # way to reach the app at all. macapp_ui sets the activation policy at
+        # runtime and can still go accessory via LINKEDIN_APP_NO_DOCK.
+        "LSUIElement": False,
         "NSHighResolutionCapable": True,
         # The dashboard is loopback-only, but a webview loading http://
         # needs this to be allowed at all under App Transport Security.

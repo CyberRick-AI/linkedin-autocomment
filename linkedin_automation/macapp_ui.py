@@ -45,6 +45,24 @@ GLYPH_BUSY = "◌"
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 860
 
+# Show a Dock icon by default.
+#
+# The first build was an accessory app — status item only, no Dock tile — on
+# the reasoning that a background service should not be quittable from the
+# Dock behind the operator's back. Quit now stops the server properly, so that
+# reasoning is spent, and it was buying nothing: Rick's menu bar already holds
+# about twenty-five icons, macOS silently drops the overflow, and the status
+# item had nowhere to draw. An icon nobody can find is worse than no icon.
+#
+# Set LINKEDIN_APP_NO_DOCK=1 for the original menu-bar-only behaviour.
+DOCK_ICON_ENV = "LINKEDIN_APP_NO_DOCK"
+
+
+def wants_dock_icon():
+    """True unless the operator explicitly asked for a menu-bar-only app."""
+    import os
+    return os.environ.get(DOCK_ICON_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}
+
 
 class DashboardWindow:
     """An ``NSWindow`` holding a ``WKWebView``, with the interface the
@@ -210,9 +228,12 @@ class AppDelegate(NSObject):
 def run(supervisor=None):
     """Build the app and enter the Cocoa run loop. Does not return."""
     app = AppKit.NSApplication.sharedApplication()
-    # Accessory: no Dock tile, no app menu. Info.plist sets LSUIElement too;
-    # this covers running the module directly, outside the bundle.
-    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+    # Regular puts it in the Dock and in Cmd-Tab, which is how an operator
+    # actually finds it. The status item is still created either way, so a
+    # crowded menu bar costs discoverability rather than the whole app.
+    app.setActivationPolicy_(
+        AppKit.NSApplicationActivationPolicyRegular if wants_dock_icon()
+        else AppKit.NSApplicationActivationPolicyAccessory)
 
     window = DashboardWindow()
 

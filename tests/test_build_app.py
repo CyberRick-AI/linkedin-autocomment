@@ -70,16 +70,28 @@ def test_the_executable_named_in_the_plist_is_the_file_that_exists(bundle):
 
 # ─── Info.plist ───────────────────────────────────────────────────────────────
 
-def test_it_is_an_accessory_app_with_no_dock_tile():
-    """``LSUIElement`` is what makes this a background service rather than an app.
+def test_it_ships_a_dock_tile():
+    """It was an accessory app, and that made it unreachable.
 
-    Without it the Dock shows a tile and Cmd-Tab lists it, and quitting from
-    the Dock would stop the server behind the operator's back. Phase 14's whole
-    premise is that this is a background service with a menu bar presence.
+    ``LSUIElement: True`` means status item only. On a menu bar already
+    holding about two dozen icons macOS drops the overflow silently, so the
+    app had a window and no way back to it once closed, and nothing in the
+    Dock or Cmd-Tab either. Observed 2026-08-02.
+
+    The original reasoning — a background service should not be quittable from
+    the Dock behind the operator's back — is spent now that Quit stops the
+    server properly.
     """
     plist = build_app.build_info_plist()
 
-    assert plist["LSUIElement"] is True
+    assert plist["LSUIElement"] is False
+
+
+def test_the_accessory_behaviour_is_still_reachable():
+    """Menu-bar-only remains available for anyone who wants it."""
+    from linkedin_automation import macapp_ui
+
+    assert macapp_ui.DOCK_ICON_ENV == "LINKEDIN_APP_NO_DOCK"
 
 
 def test_a_webview_is_allowed_to_load_the_local_dashboard():
@@ -450,3 +462,18 @@ def test_the_status_item_never_ends_up_blank():
     assert "setImage_(image)" in refresh
     assert "setTitle_(glyph)" in refresh, "there is no fallback when the symbol is missing"
     assert "setTemplate_(True)" in refresh, "a non-template image ignores dark mode"
+
+
+def test_the_dock_icon_can_be_turned_off(monkeypatch):
+    """Default on, because discoverability is the problem being solved."""
+    from linkedin_automation import macapp_ui
+
+    monkeypatch.delenv(macapp_ui.DOCK_ICON_ENV, raising=False)
+    assert macapp_ui.wants_dock_icon() is True
+
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv(macapp_ui.DOCK_ICON_ENV, value)
+        assert macapp_ui.wants_dock_icon() is False
+
+    monkeypatch.setenv(macapp_ui.DOCK_ICON_ENV, "no")
+    assert macapp_ui.wants_dock_icon() is True
