@@ -152,3 +152,94 @@ def exit_cleanly_on_termination(signals=None) -> List[str]:
             # fatal: the script simply keeps the default disposition.
             logger.debug("Could not install a handler for %s", name)
     return installed
+
+
+# ─── ChromeDriver on macOS ────────────────────────────────────────────────────
+
+# How long to allow for a `chromedriver --version` probe and for `codesign`.
+# Both are near-instant; these bounds exist so a wedged tool cannot hang a run.
+DRIVER_PROBE_TIMEOUT = 15
+CODESIGN_TIMEOUT = 60
+
+
+def driver_runs(driver_path: str) -> bool:
+    """True when ``chromedriver --version`` actually executes.
+
+    Cheap, and the only reliable test. A driver that macOS will refuse is
+    indistinguishable from a working one by looking at the file: right size,
+    right permissions, executable bit set.
+    """
+    try:
+        result = subprocess.run(
+            [driver_path, "--version"],
+            capture_output=True, timeout=DRIVER_PROBE_TIMEOUT,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("chromedriver probe failed: %s", e)
+        return False
+
+
+def ensure_driver_runnable(driver_path: str) -> bool:
+    """Make a freshly downloaded chromedriver executable on macOS.
+
+    **The failure this exists for.** Chrome updates itself, `webdriver_manager`
+    downloads a matching chromedriver, and macOS kills the new binary with
+    SIGKILL before a single line of it runs. Selenium reports:
+
+        Service .../chromedriver unexpectedly exited. Status code was: -9
+
+    which names neither the cause nor the fix. Observed 2026-08-03: a scrape
+    that had worked the day before failed at browser startup, having never
+    reached LinkedIn, minutes after Chrome auto-updated overnight.
+
+    The remedy is an ad-hoc code signature. `xattr` does not help: the
+    attribute involved is `com.apple.provenance`, which is protected and
+    cannot be removed.
+
+    **This does replace a code signature, so it is worth being plain about it.**
+    The binary comes from Google's own `chrome-for-testing` endpoint over
+    HTTPS, fetched by a pinned dependency, and it is re-signed locally rather
+    than trusted from anywhere new. It is also exactly what the operator would
+    do by hand, and the alternative is a tool that stops working every time
+    Chrome updates with an error nobody can act on.
+
+    Returns True when the driver runs afterwards. Never raises: a driver that
+    cannot be repaired should fail at the browser with Selenium's own message
+    rather than here.
+    """
+    if not IS_MACOS or not driver_path:
+        return True
+
+    if driver_runs(driver_path):
+        return True
+
+    logger.warning(
+        "chromedriver at %s will not start, which on macOS is normally a "
+        "freshly downloaded driver being refused by Gatekeeper. Re-signing it "
+        "locally.", driver_path)
+
+    try:
+        result = subprocess.run(
+            ["codesign", "--force", "--sign", "-", driver_path],
+            capture_output=True, timeout=CODESIGN_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.error("Could not run codesign on chromedriver: %s", e)
+        return False
+
+    if result.returncode != 0:
+        logger.error(
+            "codesign failed on chromedriver (exit %s): %s",
+            result.returncode, (result.stderr or b"").decode("utf-8", "replace").strip())
+        return False
+
+    if driver_runs(driver_path):
+        logger.info("chromedriver re-signed and now starts normally")
+        return True
+
+    logger.error(
+        "chromedriver still will not start after re-signing. Try deleting "
+        "~/.wdm so it downloads again, or run: codesign --force --sign - %s",
+        driver_path)
+    return False

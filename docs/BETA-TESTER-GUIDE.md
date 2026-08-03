@@ -510,12 +510,32 @@ does not get flagged.
 | Nothing at all happens on first open | You double-clicked instead of right-click then Open. See Step 4. |
 | "The login check could not run" | A leftover Chrome is holding your profile. See Part 5. |
 | Chrome opens then closes immediately | Session expired. Press **Log in** again. |
+| "chromedriver unexpectedly exited. Status code was: -9" | Chrome updated itself and macOS is refusing the new driver. The app repairs this automatically now; if it persists see the note below. |
 | A scrape returns nothing | Press **Check Selectors**. If it is red, LinkedIn changed its layout. |
 | Everything gets binned as low quality | Your keywords do not match your feed. See Part 4. |
 | A button does nothing | Read the log panel underneath it. |
 | A run stopped early | Check whether you pressed Stop, or whether it stopped itself after three email-verification prompts. |
 | "A browser task is already running" | Another Chrome job is going. Wait for it. |
 | Generation fails with a provider error | Settings, then **Test Connection**. Usually a wrong model name. |
+
+---
+
+### If chromedriver still will not start
+
+Chrome updates itself every few weeks. Each time, a new matching chromedriver
+is downloaded, and macOS sometimes kills the new binary on sight with no
+useful explanation. The app now detects that and re-signs the driver locally,
+so you should never see it. If you do:
+
+```bash
+codesign --force --sign - ~/.wdm/drivers/chromedriver/*/*/chromedriver
+```
+
+Or delete `~/.wdm` entirely and let it download again.
+
+This is macOS refusing an unrecognised binary, not anything wrong with your
+setup, and it has nothing to do with LinkedIn: it fails before the browser
+opens, so nothing has been logged out.
 
 ---
 

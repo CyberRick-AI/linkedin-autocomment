@@ -32,6 +32,8 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
 
+from . import platform_compat
+
 # Optional: passwords go to the OS credential store when one is available.
 # Guarded so an existing checkout that hasn't reinstalled requirements still
 # imports and keeps working with in-file storage.
@@ -772,7 +774,13 @@ def create_driver(profile_name: str = None, headless: bool = False) -> Tuple[web
     if headless:
         options.add_argument('--headless=new')
     
-    service = Service(ChromeDriverManager().install())
+    driver_path = ChromeDriverManager().install()
+    # A driver downloaded minutes ago is the one macOS refuses. Chrome updates
+    # itself, webdriver_manager fetches a matching chromedriver, and Gatekeeper
+    # kills the new binary with SIGKILL before it runs a line. Selenium reports
+    # "Status code was: -9", which names neither the cause nor the fix.
+    platform_compat.ensure_driver_runnable(driver_path)
+    service = Service(driver_path)
     driver = webdriver.Chrome(service=service, options=options)
     # Selenium's default page load timeout is 300s. A hanging navigation then
     # blocks for five minutes and surfaces as an ambiguous login status, which
