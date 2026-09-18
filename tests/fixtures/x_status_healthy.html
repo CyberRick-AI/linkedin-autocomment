@@ -1,0 +1,101 @@
+<!--
+  Synthetic X status (permalink) page. Hand-authored, no live data.
+
+  Satisfies every page="x_status" registry entry:
+    x_status_tweet     [data-testid='tweet']                    (min 1)
+    x_status_text      [data-testid='tweetText']                (min 1)
+    x_status_back      [data-testid='app-bar-back']             (min 1)
+    x_reply_editor     [data-testid='tweetTextarea_0']          (min 1)
+    x_reply_submit     [data-testid='tweetButtonInline']        (min 1)
+    x_status_witness   [data-testid='inline_reply_offscreen']   (min 1)
+
+  THE COMPOSER IS HERE ON PAGE LOAD, AND NOTHING WAS CLICKED.
+
+  That is the finding this fixture exists to freeze. The harvest dumped this
+  page twice — once as loaded (`status`) and once after clicking the reply box
+  (`composer_open`) — and the two captures held IDENTICAL structural testids.
+  X ships the reply composer in the initial DOM.
+
+  So the X side has no equivalent of LinkedIn's requires_comment_box gate, and
+  none of these entries is gated. On LinkedIn a page-load check genuinely cannot
+  see the comment editor; on X it can, and pretending otherwise would report
+  "not checked" for something sitting in plain sight.
+
+  inline_reply_offscreen is the ONE captured hook unique to a status page — it
+  appears on neither the timeline nor search. app-bar-back is NOT unique (search
+  has it too), which is why the registry says so rather than leaning on it.
+-->
+<html>
+<head><title>Synthetic Account One on X: "First synthetic post body." / X</title></head>
+<body>
+<div id="react-root">
+
+  <header role="banner">
+    <button data-testid="app-bar-back" aria-label="Back"></button>
+    <a data-testid="SideNav_NewTweet_Button" href="/compose/post" role="button">Post</a>
+  </header>
+
+  <div data-testid="primaryColumn">
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user1"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account One</span><span>@user1</span>
+        </div>
+        <a href="/user1/status/9999999999999990001"><time>1h</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">First synthetic post body. Nothing here came from a live capture.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="1 Reply. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="1 Like. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- The reply composer, as delivered by the initial page load. -->
+    <div data-testid="inline_reply_offscreen">
+      <div data-testid="tweetTextarea_0RichTextInputContainer">
+        <div data-testid="tweetTextarea_0" contenteditable="true" role="textbox"
+             aria-label="Post text"></div>
+        <div data-testid="tweetTextarea_0_label">Post your reply</div>
+      </div>
+      <button data-testid="tweetButtonInline" role="button"><span>Reply</span></button>
+    </div>
+
+    <!-- An existing reply below the composer, so the card hooks are not unique
+         to the subject post. -->
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user2"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account Two</span><span>@user2</span>
+        </div>
+        <a href="/user2/status/9999999999999990004"><time>32m</time></a>
+        <div data-testid="tweetText">A synthetic reply.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="0 Likes. Like"></button>
+        </div>
+      </article>
+    </div>
+
+  </div>
+
+  <div data-testid="sidebarColumn">
+    <div data-testid="UserCell">
+      <div data-testid="User-Name"><span>Synthetic Account One</span><span>@user1</span></div>
+      <button data-testid="9999999991-unfollow" aria-label="Following @user1">Following</button>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
