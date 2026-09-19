@@ -76,6 +76,7 @@ Same rules, same reasoning, a different site. Driven by
 | `x_timeline_broken.html` | x_timeline | `BROKEN` — the critical card container renamed |
 | `x_status_healthy.html` | x_status | `HEALTHY` — permalink page, composer present on load |
 | `x_search_healthy.html` | x_search | `HEALTHY` — same cards as the timeline, plus search chrome |
+| `x_timeline_mixed.html` | (finder only) | not a gate fixture — the awkward real shapes, see below |
 
 These are **shaped from** the live captures, never copied from them. The four
 scrubbed dumps live in `data/<profile>/x_spike/` (gitignored, machine-local) and
@@ -110,3 +111,22 @@ shows the editor and submit button at page load. `tweetTextarea_0` also appears
 in `x_timeline_healthy.html`, which is not a mistake: X mounts an inline composer
 on the timeline too, and that overlap is exactly why the reply editor is filed
 under `page="x_status"` and must be scoped rather than looked up document-wide.
+
+### `x_timeline_mixed.html` — the shapes the captures actually held
+
+The gate fixtures above are clean cases. This one is for the **finder**
+(`tests/test_x_finder.py`) and is not checked by the selector gate. Every card
+in it reproduces something found by parsing the four real scrubbed dumps:
+
+| Card | Shape | Why it matters |
+|---|---|---|
+| A | permalink with `/analytics` **and** `/photo/1` siblings | either sibling, taken as the URL, writes a store key the poster cannot navigate back to |
+| B | a quote tweet — two `User-Name`, two `<time>`, one `tweetText` | cards nest (3 of 5 cards in the timeline capture); every per-card lookup must take the FIRST match or it reads the quoted account as the author |
+| C | a paid ad: external `utm_medium=paid_social_media` link, no `<time>`, no canonical permalink | exactly one card in the capture had this shape; it cannot be addressed, so the finder skips it |
+| D | `/i/status/<id>` | `i` is one of X's own routes, not a handle — addressable, but with no account in the URL |
+| E | a re-render of card A, same permalink | X repeats a card across rows, so counting rows double-counts |
+
+Expected: three posts parsed (A, B, D). C is skipped, E collapses into A.
+
+Counts are written in X's real phrasing, singular forms included (`1 Reply.
+Reply`, `1 repost. Repost`), because that is what the captures held.

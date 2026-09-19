@@ -1,0 +1,144 @@
+<!--
+  Synthetic X timeline carrying THE AWKWARD SHAPES THE LIVE CAPTURES CONTAINED.
+  Hand-authored, no live data.
+
+  x_timeline_healthy.html is the clean case, and it is what the selector
+  registry gate checks. This one exists for the FINDER, and every card below
+  reproduces something that was actually in data/<profile>/x_spike/ — found by
+  parsing the four scrubbed dumps, not imagined:
+
+    card A  a normal post whose permalink has BOTH sibling variants beside it,
+            /analytics and /photo/1. Neither is the post's URL. Treating one as
+            the permalink writes a store key the poster cannot navigate back to.
+
+    card B  a QUOTE TWEET: two User-Name blocks, two avatars, two <time>
+            elements, one tweetText. Cards nest. Every per-card lookup has to
+            take the FIRST match or it reads the quoted account as the author.
+            (Seen on 3 of 5 cards in timeline_foryou.)
+
+    card C  a PAID AD: an external utm_medium=paid_social_media link, a
+            card.wrapper, NO <time>, and no canonical permalink — only the
+            /analytics variant. Exactly one card in the timeline capture had
+            this shape. It cannot be addressed, so the finder must skip it.
+
+    card D  a permalink under /i/status/ — 'i' is one of X's own routes, not a
+            handle. The post IS addressable; it just has no account in its URL.
+            (Seen in timeline_foryou_scrolled.)
+
+    card E  a re-render of card A, same permalink. X repeats a card across rows
+            in some states, so a caller counting rows double-counts.
+
+  Expected: the finder parses THREE posts — A, B and D. Card C is skipped (not
+  addressable) and card E collapses into card A (same permalink). Card B's
+  author reads as the OUTER account, not the quoted one.
+
+  Counts live in the action buttons' own aria-labels, in X's real phrasing
+  ("4 Replies. Reply", "1 Reply. Reply", "2166 Likes. Like") including the
+  singular forms, because that is what the captures held.
+-->
+<html>
+<head><title>Home / X</title></head>
+<body>
+<div id="react-root">
+  <div data-testid="primaryColumn">
+
+    <!-- card A: the ordinary case, with both sibling href variants -->
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet">
+        <div data-testid="Tweet-User-Avatar"><a href="/user1"><img alt=""></a></div>
+        <div data-testid="User-Name"><span>Synthetic Account One</span><span>@user1</span><span>&#183;</span><span>1h</span></div>
+        <a href="/user1/status/9999999999999990001"><time datetime="2026-09-17T10:15:00.000Z">1h</time></a>
+        <a href="/user1/status/9999999999999990001/analytics">View post analytics</a>
+        <a href="/user1/status/9999999999999990001/photo/1"><img alt=""></a>
+        <button data-testid="caret" aria-label="More"></button>
+        <div data-testid="tweetText">An llm writes the first draft and a person edits it, which is a very different workflow from the one everybody describes.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="4 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="6 reposts. Repost"></button>
+          <button data-testid="like" aria-label="48 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- card B: a quote tweet. TWO User-Name blocks, TWO <time>, one tweetText. -->
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet">
+        <div data-testid="Tweet-User-Avatar"><a href="/user2"><img alt=""></a></div>
+        <div data-testid="User-Name"><span>Outer Synthetic Account</span><span>@user2</span></div>
+        <a href="/user2/status/9999999999999990002"><time datetime="2026-09-17T09:00:00.000Z">3h</time></a>
+        <button data-testid="caret" aria-label="More"></button>
+        <div data-testid="tweetText">Worth reading if you care about how retrieval augmented generation actually behaves under load.</div>
+        <!-- the quoted card, nested INSIDE the outer one -->
+        <div class="quoted">
+          <div data-testid="Tweet-User-Avatar"><a href="/user9"><img alt=""></a></div>
+          <div data-testid="User-Name"><span>Quoted Synthetic Account</span><span>@user9</span></div>
+          <a href="/user9/status/9999999999999990009"><time datetime="2026-09-10T08:00:00.000Z">Sep 10</time></a>
+        </div>
+        <div role="group">
+          <button data-testid="reply" aria-label="1 Reply. Reply"></button>
+          <button data-testid="retweet" aria-label="1 repost. Repost"></button>
+          <button data-testid="like" aria-label="1 Like. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- card C: a paid ad. No <time>, no canonical permalink. -->
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet">
+        <div data-testid="Tweet-User-Avatar"><a href="/user5"><img alt=""></a></div>
+        <div data-testid="User-Name"><span>Synthetic Advertiser</span><span>@user5</span></div>
+        <div data-testid="card.wrapper">
+          <a href="https://example.invalid/offer?utm_medium=paid_social_media&amp;utm_source=twitter">Shop the synthetic sale</a>
+        </div>
+        <a href="/user5/status/9999999999999990005/analytics">View post analytics</a>
+        <button data-testid="caret" aria-label="More"></button>
+        <div data-testid="tweetText">A synthetic promoted post about an llm powered shopping assistant.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="191 reposts. Repost"></button>
+          <button data-testid="like" aria-label="2166 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- card D: X's own /i/ route as the permalink handle -->
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet">
+        <div data-testid="Tweet-User-Avatar"><a href="/user3"><img alt=""></a></div>
+        <div data-testid="User-Name"><span>Synthetic Account Three</span><span>@user3</span></div>
+        <a href="/i/status/9999999999999990003"><time datetime="2026-09-17T06:30:00.000Z">6h</time></a>
+        <button data-testid="caret" aria-label="More"></button>
+        <div data-testid="tweetText">Short one about evaluation harnesses and why the benchmark disagrees with production.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="2 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- card E: the same post as card A, re-rendered in another row -->
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet">
+        <div data-testid="Tweet-User-Avatar"><a href="/user1"><img alt=""></a></div>
+        <div data-testid="User-Name"><span>Synthetic Account One</span><span>@user1</span></div>
+        <a href="/user1/status/9999999999999990001"><time datetime="2026-09-17T10:15:00.000Z">1h</time></a>
+        <button data-testid="caret" aria-label="More"></button>
+        <div data-testid="tweetText">An llm writes the first draft and a person edits it, which is a very different workflow from the one everybody describes.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="4 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="6 reposts. Repost"></button>
+          <button data-testid="like" aria-label="48 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
