@@ -20,6 +20,7 @@ import os
 import pytest
 
 from linkedin_automation import post_store as ps
+from linkedin_automation import selector_health as shc
 from linkedin_automation import x_finder as xf
 from linkedin_automation.post_finder import ContentAnalyzer
 
@@ -344,3 +345,74 @@ def test_a_post_seen_twice_across_scrolls_is_kept_once(store):
     summary = xf.XTimelineFinder(driver).run(store=store, scrolls=2)
     assert summary["parsed"] == 3
     assert len(store.posts) == 3
+
+
+# ─── The live runner's pure logic ─────────────────────────────────────────────
+#
+# tools/run_x_finder.py is mostly a browser driver, but the part that decides
+# whether the LIVE DOM still matches the harvested selectors is pure and worth
+# testing: it is the thing that tells a re-harvest signal apart from a bug.
+
+def _load_runner():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "tools", "run_x_finder.py")
+    spec = importlib.util.spec_from_file_location("run_x_finder", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _SelectorDriver:
+    """Answers find_elements from a parsed fixture, like a browser would."""
+
+    def __init__(self, html):
+        from linkedin_automation import dom_probe
+        self._count = dom_probe.make_counter(html)
+
+    def find_elements(self, by, selector):
+        return [None] * self._count(selector)
+
+
+def test_the_live_selector_check_passes_against_a_healthy_timeline():
+    runner = _load_runner()
+    driver = _SelectorDriver(fixture("x_timeline_healthy"))
+    check = runner.check_live_selectors(driver)
+    assert shc.overall_status(check) == "HEALTHY"
+    assert runner.report_selectors(check) == 0
+
+
+def test_the_live_selector_check_reports_drift_rather_than_crashing():
+    """A rotated DOM must surface as a MISS, not an exception.
+
+    This is the case the whole runner exists for: the fixtures were shaped from
+    captures taken in August, and X may have moved since.
+    """
+    runner = _load_runner()
+    driver = _SelectorDriver(fixture("x_timeline_broken"))
+    check = runner.check_live_selectors(driver)
+    assert runner.report_selectors(check) >= 1
+    assert check["x_tweet_card"]["ok"] is False
+    # The permalink does not live inside the card hook, so it must survive.
+    assert check["x_tweet_permalink"]["ok"] is True
+
+
+def test_the_live_counter_scores_an_unreadable_selector_zero_not_an_error():
+    """A browser rejecting one selector must not abort the whole run."""
+    runner = _load_runner()
+
+    class _Angry:
+        def find_elements(self, by, selector):
+            raise RuntimeError("invalid selector")
+
+    assert runner.live_counter(_Angry())("[data-testid='tweet']") == 0
+
+
+def test_the_runner_only_checks_the_confirmed_timeline_page():
+    """Search is PROVISIONAL and must not be exercised by the go/no-go."""
+    runner = _load_runner()
+    driver = _SelectorDriver(fixture("x_timeline_healthy"))
+    checked = set(runner.check_live_selectors(driver))
+    x_pages = {k: v.get("page") for k, v in shc.SELECTOR_REGISTRY.items()}
+    assert all(x_pages[k] == "x_timeline" for k in checked)
+    assert not any(k.startswith("x_search") for k in checked)
