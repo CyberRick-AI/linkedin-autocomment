@@ -143,7 +143,21 @@ query GetChannels($orgId: OrganizationId!) {
 """
 
 
-def discover(key):
+#: What Buffer calls each network, as a `service` value on Channel.
+#:
+#: X is listed under its OLD name too. Buffer's schema still says "twitter"
+#: (the metadata input is TwitterPostMetadataInput, not XPostMetadataInput), so
+#: a spike matching on "x" alone would report "no X channel" against an account
+#: that has one. Both spellings are accepted, and the real service value is
+#: printed, so the answer comes off the wire rather than out of this table.
+SERVICE_ALIASES = {
+    "linkedin": ("linkedin",),
+    "x": ("x", "twitter"),
+    "twitter": ("x", "twitter"),
+}
+
+
+def discover(key, service="linkedin"):
     print("\n=== STEP 1 - organization and channel ===")
     orgs = gql(key, Q_ORGS, label="GetOrganizations")
     data = (orgs.get("data") or {}).get("account") or {}
@@ -190,17 +204,24 @@ def discover(key):
         print("    %-38s service=%-12s id=%s"
               % (c.get("name"), c.get("service"), c.get("id")))
 
-    linkedin = [c for c in channels
-                if str(c.get("service", "")).lower().startswith("linkedin")]
-    if not linkedin:
-        raise BufferError("no LinkedIn channel found among %d channels"
-                          % len(channels))
-    if len(linkedin) > 1:
-        print("\n  ! more than one LinkedIn channel. Pass --channel-id to pick "
-              "the dev one explicitly rather than letting this guess.")
-    print("\n  LinkedIn channel: %s -> %s"
-          % (linkedin[0].get("name"), linkedin[0]["id"]))
-    return org_id, linkedin[0]["id"], linkedin
+    wanted = SERVICE_ALIASES.get((service or "").lower(),
+                                 ((service or "").lower(),))
+    matched = [c for c in channels
+               if str(c.get("service", "")).lower().startswith(wanted)]
+    if not matched:
+        raise BufferError(
+            "no %s channel found among %d channels (services present: %s). "
+            "Connect one in Buffer, or pass --channel-id to target a channel "
+            "this matcher does not recognise."
+            % (service, len(channels),
+               ", ".join(sorted({str(c.get("service")) for c in channels}))))
+    if len(matched) > 1:
+        print("\n  ! more than one %s channel. Pass --channel-id to pick the "
+              "right one explicitly rather than letting this guess." % service)
+    print("\n  %s channel: %s -> %s  (service=%r)"
+          % (service, matched[0].get("name"), matched[0]["id"],
+             matched[0].get("service")))
+    return org_id, matched[0]["id"], matched
 
 
 # ─── step 2: introspect, because docs are not evidence ───────────────────────
@@ -211,6 +232,10 @@ query IntrospectInput($name: String!) {
     name
     kind
     inputFields {
+      name
+      type { name kind ofType { name kind ofType { name kind } } }
+    }
+    fields {
       name
       type { name kind ofType { name kind ofType { name kind } } }
     }
@@ -237,10 +262,15 @@ def introspect(key, names):
             print("  %-32s NOT PRESENT in the schema" % name)
             found[name] = None
             continue
-        fields = {f["name"]: _type_name(f["type"])
-                  for f in (t.get("inputFields") or [])}
+        # An output type carries `fields`, an input object `inputFields`.
+        # Reporting only the latter makes an output type look EMPTY, which is a
+        # different claim from "not in the schema" and was hiding the shape of
+        # the read-back side.
+        kind = t.get("kind")
+        raw_fields = (t.get("inputFields") or []) + (t.get("fields") or [])
+        fields = {f["name"]: _type_name(f["type"]) for f in raw_fields}
         found[name] = fields
-        print("  %s (%d fields):" % (name, len(fields)))
+        print("  %s [%s] (%d fields):" % (name, kind, len(fields)))
         for fname, ftype in sorted(fields.items()):
             print("      %-22s %s" % (fname, ftype))
     return found
@@ -285,7 +315,8 @@ mutation CreateSpikePost($input: CreatePostInput!) {
 """
 
 
-def build_input(channel_id, text, image_url, due_at, first_comment):
+def build_input(channel_id, text, image_url, due_at, first_comment,
+                service="linkedin"):
     """The one call that has to carry all four things at once.
 
     Every field here was checked against the live schema, because four of them
@@ -319,8 +350,19 @@ def build_input(channel_id, text, image_url, due_at, first_comment):
         # Buffer takes a PUBLICLY ACCESSIBLE URL here, not a file upload and not
         # base64. ImageAssetInput.url is String! and is the only required field.
         payload["assets"] = [{"image": {"url": image_url}}]
+    # Metadata is per-NETWORK and the key is the network's name in
+    # PostInputMetaData. firstComment exists ONLY on linkedin: introspection
+    # shows TwitterPostMetadataInput has no such field (its self-reply seam is
+    # `thread`, a whole post rather than a string). Sending {"linkedin": ...}
+    # on an X post would be a schema-valid lie — the block would be accepted and
+    # silently ignored, or rejected — so it is gated on the service.
     if first_comment:
-        payload["metadata"] = {"linkedin": {"firstComment": first_comment}}
+        if (service or "").lower() == "linkedin":
+            payload["metadata"] = {"linkedin": {"firstComment": first_comment}}
+        else:
+            print("  (first comment ignored: %s has no firstComment field; "
+                  "X threads via metadata.twitter.thread — see "
+                  ".dev/FINDING_x_buffer_thread.md)" % service)
     return payload
 
 
@@ -376,7 +418,9 @@ query ReadBack($id: PostId!) {
     assets { id mimeType source thumbnail type }
     error { message rawError }
     metadata {
+      __typename
       ... on LinkedInPostMetadata { type firstComment }
+      ... on TwitterPostMetadata { type threadCount isAiGenerated }
     }
   }
 }
@@ -537,8 +581,13 @@ def main():
     ap.add_argument("--create", action="store_true",
                     help="actually schedule a post. WITHOUT THIS NOTHING IS "
                          "CREATED - createPost schedules on a real account.")
+    ap.add_argument("--service", default="linkedin",
+                    help="which network's channel to target: linkedin (default) "
+                         "or x. Buffer still calls X 'twitter' internally and "
+                         "both spellings are accepted.")
     ap.add_argument("--channel-id", default=None,
-                    help="the dev LinkedIn channel id, instead of auto-picking")
+                    help="target this channel id instead of auto-picking by "
+                         "--service. Wins over --service.")
     ap.add_argument("--image-url", default=None,
                     help="PUBLIC image URL. Buffer does not take a local file.")
     ap.add_argument("--minutes", type=int, default=12,
@@ -578,7 +627,7 @@ def main():
         return 0
 
     try:
-        org_id, channel_id, li_channels = discover(key)
+        org_id, channel_id, li_channels = discover(key, args.service)
     except BufferError as exc:
         print("\nSTOPPED: %s" % exc)
         return 1
@@ -590,6 +639,16 @@ def main():
         "CreatePostInput",
         "PostInputMetaData",
         "LinkedInPostMetadataInput",
+        # The Phase 1 question. Buffer's schema still uses the old name, so both
+        # spellings are asked for and "NOT PRESENT" becomes an answer rather
+        # than a suspected typo. The output type is introspected too: a
+        # self-reply that can be SET but never READ BACK is not a usable seam.
+        "TwitterPostMetadataInput",
+        "XPostMetadataInput",
+        "TwitterPostMetadata",
+        # X's self-reply seam, whatever it turns out to be.
+        "ThreadedPostInput",
+        "RetweetMetadataInput",
         "PostAssetInput",
         "ImageAssetInput",
     ])
@@ -602,7 +661,7 @@ def main():
     text = "%s #automation" % args.text
     first_comment = None if args.no_first_comment else args.first_comment
     payload = build_input(channel_id, text, args.image_url, due_at,
-                          first_comment)
+                          first_comment, service=args.service)
     if args.no_first_comment:
         print("\n  --no-first-comment: metadata is omitted entirely, which is "
               "the free-plan shape.")
