@@ -1,7 +1,12 @@
 """THROWAWAY SPIKE - can Buffer's API replace the browser-based scheduled poster?
 
-Branch `buffer-spike`. Not production code, not wired into anything, and it
-imports nothing from linkedin_automation. If the answer is no, this file is
+Branch `buffer-spike`. Not production code and not wired into anything.
+
+It imported nothing from linkedin_automation until --image-file, which
+deliberately calls the REAL `image_host` layer rather than a spike copy: the
+thing being tested is the actual local -> R2 -> Buffer -> X path, and a
+second uploader would prove that second uploader works and nothing else.
+image_host is USED, never modified. If the answer is no, this file is
 deleted; if it is yes, the browser post/image/schedule build is dropped and this
 gets rewritten properly.
 
@@ -391,6 +396,42 @@ def build_input(channel_id, text, image_url, due_at, first_comment,
     return payload
 
 
+def host_local_image(path):
+    """Upload a local file via the project's image_host and return its URL.
+
+    THE POINT IS THAT THIS IS THE REAL LAYER. `image_host.upload_image` is what
+    the scheduled-posting pipeline already calls, so a spike that re-implemented
+    the upload would be testing the re-implementation. It is imported here and
+    not modified.
+
+    Two properties it brings that matter to the failure this flag exists for:
+
+    * the key is the CONTENT HASH, so re-running with the same picture
+      overwrites itself instead of accumulating copies;
+    * `verify=True` re-fetches the URL ANONYMOUSLY and fails if the bucket is
+      not actually public.
+
+    That second one is precisely the class of problem that killed the picsum
+    attempt. X's publish-side fetch returned HTTP 405 "Media URL not publicly
+    accessible" because picsum REDIRECTS, and X would not follow it. An R2
+    public URL is a direct 200 with a real image content-type, which is what
+    the verify step proves before anything is scheduled.
+    """
+    # Imported lazily so the rest of the spike keeps working with no R2 config
+    # and no boto3 installed - only --image-file needs them.
+    from linkedin_automation import image_host
+
+    missing = [v for v in image_host.REQUIRED_VARS
+               if not (os.environ.get(v) or "").strip()]
+    if missing:
+        raise BufferError(
+            "--image-file needs R2 configured; missing from .env: %s"
+            % ", ".join(missing))
+
+    url = image_host.upload_image(path)      # verify=True by default
+    return url
+
+
 def create_post(key, payload):
     print("\n=== STEP 3 - createPost ===")
     print("  input: %s" % json.dumps(payload, indent=2)[:900])
@@ -619,7 +660,17 @@ def main():
                     help="target this channel id instead of auto-picking by "
                          "--service. Wins over --service.")
     ap.add_argument("--image-url", default=None,
-                    help="PUBLIC image URL. Buffer does not take a local file.")
+                    help="PUBLIC image URL, used as given. Buffer does not take "
+                         "a local file. NOTE: X's publish-side fetch rejects "
+                         "some hosts outright — picsum.photos returned HTTP 405 "
+                         "('Media URL not publicly accessible') because it "
+                         "redirects. Use --image-file to route through R2.")
+    ap.add_argument("--image-file", default=None, metavar="PATH",
+                    help="a LOCAL image. Uploads it through the project's "
+                         "image_host (R2) and attaches the returned public URL "
+                         "— the same layer the real pipeline uses, so this "
+                         "exercises local -> R2 -> Buffer -> X end to end. "
+                         "Requires --create; needs the R2_* vars in .env.")
     ap.add_argument("--minutes", type=int, default=12,
                     help="schedule this many minutes from now (default 12)")
     ap.add_argument("--text", default="Buffer API spike - scheduled post test.")
@@ -655,6 +706,16 @@ def main():
     # buffer_client.api_key() is deliberately not touched: it is shared
     # production code on the LinkedIn scheduling path, and a spike proving out
     # multi-account must not change how the working account resolves its key.
+    # Refuse the ambiguous case rather than picking one. This spike already
+    # carries --check-image-url because "the wrong image appeared on a post"
+    # actually happened, and a silent precedence rule between two image flags is
+    # how that recurs.
+    if args.image_url and args.image_file:
+        print("--image-url and --image-file are mutually exclusive: one is a "
+              "URL used as given, the other is a local file to upload. Pass "
+              "exactly one.")
+        return 2
+
     global KEY_ENV_VAR
     KEY_ENV_VAR = args.key_env
     key = (os.getenv(args.key_env) or "").strip()
@@ -707,7 +768,26 @@ def main():
 
     text = "%s #automation" % args.text
     first_comment = None if args.no_first_comment else args.first_comment
-    payload = build_input(channel_id, text, args.image_url, due_at,
+    image_url = args.image_url
+    if args.image_file:
+        # Uploading is a WRITE (to R2), so it lives behind --create with
+        # everything else that writes. A read-only run says what it would do
+        # and does not touch the bucket.
+        if not args.create:
+            print("\n  --image-file %s would be uploaded to R2 on --create; "
+                  "read-only run, nothing uploaded." % args.image_file)
+        else:
+            print("\n=== STEP 2b - hosting the local image through image_host ===")
+            try:
+                image_url = host_local_image(args.image_file)
+            except Exception as exc:
+                print("  UPLOAD FAILED: %s" % exc)
+                print("  Nothing was scheduled - a post with a dead image URL is")
+                print("  worse than no post, and X rejects the whole publish.")
+                return 1
+            print("  public URL: %s" % image_url)
+
+    payload = build_input(channel_id, text, image_url, due_at,
                           first_comment, service=args.service,
                           thread_text=args.thread_text)
     if args.no_first_comment:
@@ -717,12 +797,14 @@ def main():
     if not args.create:
         print("\n=== STEP 3 - SKIPPED (no --create) ===")
         print("  would send: %s" % json.dumps(payload, indent=2)[:900])
-        if not args.image_url:
-            print("  ! no --image-url, so the image half would be untested")
+        if not image_url and not args.image_file:
+            print("  ! no --image-url or --image-file, so the image half would "
+                  "be untested")
     else:
-        if not args.image_url:
-            print("\n  ! --create without --image-url: the post would carry no "
-                  "image, which leaves the main open question unanswered.")
+        if not image_url:
+            print("\n  ! --create with no image: the post would carry none, "
+                  "which leaves the main open question unanswered. Pass "
+                  "--image-file (local, via R2) or --image-url (public URL).")
         post = create_post(key, payload)
         if post and post.get("id"):
             back = read_back(key, post["id"])

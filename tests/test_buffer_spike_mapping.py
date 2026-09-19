@@ -9,6 +9,8 @@ pins the finding that matters most for the CSV design.
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.buffer_spike import build_input, csv_row_to_input  # noqa: E402
@@ -288,3 +290,99 @@ def test_an_empty_key_variable_is_treated_as_missing(capsys, monkeypatch):
                                      "X_BUFFER_API_KEY"])
     assert spike.main() == 2
     assert "X_BUFFER_API_KEY is not set" in capsys.readouterr().out
+
+
+# ─── --image-file: the real local -> R2 -> Buffer path ───────────────────────
+#
+# No R2 and no network here: image_host.upload_image is the seam, and these
+# check that the spike CALLS it rather than re-implementing an upload.
+
+def test_host_local_image_delegates_to_the_projects_image_host(monkeypatch):
+    """The point of the flag is that it uses the REAL layer.
+
+    A spike with its own uploader would prove that uploader works and tell us
+    nothing about the path the pipeline actually takes.
+    """
+    import tools.buffer_spike as spike
+    from linkedin_automation import image_host
+
+    for var in image_host.REQUIRED_VARS:
+        monkeypatch.setenv(var, "set-for-test")
+
+    seen = {}
+
+    def fake_upload(path, **kw):
+        seen["path"] = path
+        return "https://cdn.example/posts/abc123.png"
+
+    monkeypatch.setattr(image_host, "upload_image", fake_upload)
+    url = spike.host_local_image("S:/pictures/post.png")
+
+    assert url == "https://cdn.example/posts/abc123.png"
+    assert seen["path"] == "S:/pictures/post.png"
+
+
+def test_a_missing_r2_config_is_named_before_anything_is_uploaded(monkeypatch):
+    """Fail on the config, not on a half-finished upload."""
+    import tools.buffer_spike as spike
+    from linkedin_automation import image_host
+
+    for var in image_host.REQUIRED_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    def explode(*a, **k):                      # must never be reached
+        raise AssertionError("upload attempted with no config")
+
+    monkeypatch.setattr(image_host, "upload_image", explode)
+
+    with pytest.raises(spike.BufferError) as exc:
+        spike.host_local_image("whatever.png")
+    assert "R2_ACCESS_KEY_ID" in str(exc.value)
+
+
+def test_the_hosted_url_is_what_reaches_the_payload(monkeypatch):
+    """local file -> R2 URL -> assets[].image.url, with nothing lost between."""
+    hosted = "https://cdn.example/posts/deadbeef.png"
+    payload = build_input("c_x", "post", hosted, None, None, service="x")
+    assert payload["assets"] == [{"image": {"url": hosted}}]
+
+
+def test_the_two_image_flags_are_mutually_exclusive(capsys, monkeypatch):
+    """Silent precedence between them is how the wrong image gets posted.
+
+    This spike already carries --check-image-url because that happened once.
+    Refusing is cheaper than diagnosing it a second time.
+    """
+    import tools.buffer_spike as spike
+    monkeypatch.setenv("BUFFER_API_KEY", "irrelevant-never-used")
+    monkeypatch.setattr("sys.argv", ["buffer_spike.py",
+                                     "--image-url", "https://example/x.png",
+                                     "--image-file", "./local.png"])
+    assert spike.main() == 2
+    assert "mutually exclusive" in capsys.readouterr().out
+
+
+def test_a_read_only_run_never_uploads(capsys, monkeypatch):
+    """--image-file without --create must not write to the bucket.
+
+    Uploading is a write. The read-only default covers R2 too, not just Buffer.
+    """
+    import tools.buffer_spike as spike
+
+    monkeypatch.setenv("BUFFER_API_KEY", "irrelevant-never-used")
+    monkeypatch.setattr(spike, "discover",
+                        lambda key, service="linkedin": ("org1", "chan1", []))
+    monkeypatch.setattr(spike, "introspect", lambda key, names: {})
+    monkeypatch.setattr(spike, "verify_claims", lambda found: {})
+
+    def explode(path):
+        raise AssertionError("uploaded during a read-only run")
+
+    monkeypatch.setattr(spike, "host_local_image", explode)
+    monkeypatch.setattr("sys.argv", ["buffer_spike.py",
+                                     "--image-file", "./local.png"])
+
+    assert spike.main() == 0
+    out = capsys.readouterr().out
+    assert "nothing uploaded" in out
+    assert "STEP 3 - SKIPPED" in out
