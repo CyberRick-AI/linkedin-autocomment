@@ -173,3 +173,118 @@ def test_the_x_post_still_carries_text_image_and_due_at():
     assert payload["assets"] == [{"image": {"url": "https://img.example/i.png"}}]
     assert payload["dueAt"] == "2026-09-19T12:00:00.000Z"
     assert payload["mode"] == "customScheduled"
+
+
+# ─── --thread-text: X's self-reply, shaped from the recorded introspection ────
+#
+# The payload shape is NOT guessed. It is read off the introspection response
+# recorded in .harvest/buffer_spike_transcript.jsonl:
+#
+#     TwitterPostMetadataInput.thread   [ThreadedPostInput!]   <- a LIST
+#     ThreadedPostInput.assets          [..]!                  <- NON_NULL
+#
+# Both matter, and both are the kind of thing that fails only at the live call.
+
+
+def test_a_thread_reply_is_sent_as_a_list():
+    """`thread` is [ThreadedPostInput!], so one reply is a list of one.
+
+    A bare object survives GraphQL's single-value-to-list coercion, but writing
+    the list is what the schema actually says, and it is the shape a second
+    thread item would extend.
+    """
+    payload = build_input("c_x", "base post", None, "2026-09-19T12:00:00.000Z",
+                          None, service="x", thread_text="the self-reply")
+    thread = payload["metadata"]["twitter"]["thread"]
+    assert isinstance(thread, list)
+    assert len(thread) == 1
+    assert thread[0]["text"] == "the self-reply"
+
+
+def test_the_thread_item_carries_the_required_empty_assets_list():
+    """ThreadedPostInput.assets is NON_NULL — omitting it is a schema error.
+
+    The same trap as CreatePostInput.assets, which failed the first createPost
+    attempt: a required list is not an optional one with a default.
+    """
+    payload = build_input("c_x", "base post", None, None, None,
+                          service="x", thread_text="reply")
+    assert payload["metadata"]["twitter"]["thread"][0]["assets"] == []
+
+
+def test_without_thread_text_an_x_post_sends_no_metadata_at_all():
+    """The base post — step 1 of the free-or-paid experiment.
+
+    If this carried metadata, a rejection could not be attributed to the thread
+    field, which is the entire thing being measured.
+    """
+    payload = build_input("c_x", "base post", "https://img.example/i.png",
+                          "2026-09-19T12:00:00.000Z", None, service="x")
+    assert "metadata" not in payload
+
+
+def test_thread_text_is_ignored_on_linkedin():
+    """LinkedIn has no thread field; its self-reply is firstComment."""
+    payload = build_input("c_li", "post", None, None, None,
+                          service="linkedin", thread_text="nope")
+    assert "metadata" not in payload
+
+
+def test_a_thread_never_displaces_a_linkedin_first_comment():
+    """The two metadata blocks are per-network and must not collide."""
+    payload = build_input("c_li", "post", None, None, "https://example.com/x",
+                          service="linkedin", thread_text="ignored")
+    assert payload["metadata"] == {"linkedin":
+                                   {"firstComment": "https://example.com/x"}}
+    assert "twitter" not in payload["metadata"]
+
+
+def test_the_base_post_survives_alongside_a_thread():
+    """Attaching a reply must not disturb text, image or dueAt."""
+    payload = build_input("c_x", "base", "https://img.example/i.png",
+                          "2026-09-19T12:00:00.000Z", None,
+                          service="x", thread_text="reply")
+    assert payload["text"] == "base"
+    assert payload["assets"] == [{"image": {"url": "https://img.example/i.png"}}]
+    assert payload["dueAt"] == "2026-09-19T12:00:00.000Z"
+
+
+# ─── --key-env: one Buffer account per environment variable ──────────────────
+
+def test_the_key_env_default_is_still_buffer_api_key(capsys, monkeypatch):
+    """Existing invocations, with no --key-env, must still read BUFFER_API_KEY.
+
+    Exercised through main() rather than asserted against the source: what
+    matters is which variable actually gets read, not what the parser declares.
+    Unsetting it is what makes the answer visible without a network call.
+    """
+    import tools.buffer_spike as spike
+    monkeypatch.delenv("BUFFER_API_KEY", raising=False)
+    monkeypatch.setattr("sys.argv", ["buffer_spike.py"])
+    assert spike.main() == 2
+    assert "BUFFER_API_KEY is not set" in capsys.readouterr().out
+
+
+def test_a_missing_key_variable_fails_loudly_and_names_itself(capsys, monkeypatch):
+    """Naming the variable is the point: with --key-env the operator may not be
+    using the default, and "BUFFER_API_KEY is not set" would send them to the
+    wrong line of .env."""
+    import tools.buffer_spike as spike
+    monkeypatch.delenv("X_BUFFER_API_KEY", raising=False)
+    monkeypatch.setattr("sys.argv", ["buffer_spike.py", "--key-env",
+                                     "X_BUFFER_API_KEY"])
+    rc = spike.main()
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "X_BUFFER_API_KEY is not set" in out
+    assert "BUFFER_API_KEY" in out           # still points at the default
+
+
+def test_an_empty_key_variable_is_treated_as_missing(capsys, monkeypatch):
+    """A variable present but blank is the same failure, not a 401 later."""
+    import tools.buffer_spike as spike
+    monkeypatch.setenv("X_BUFFER_API_KEY", "   ")
+    monkeypatch.setattr("sys.argv", ["buffer_spike.py", "--key-env",
+                                     "X_BUFFER_API_KEY"])
+    assert spike.main() == 2
+    assert "X_BUFFER_API_KEY is not set" in capsys.readouterr().out

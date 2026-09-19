@@ -25,8 +25,11 @@ createPost against a connected channel schedules a real post on a real account.
     uv run python tools/buffer_spike.py                     # inspect only
     uv run python tools/buffer_spike.py --create --image-url https://...
 
-BUFFER_API_KEY comes from the environment (.env). It is never printed, never
-logged, and never committed.
+The Buffer key comes from the environment (.env) — by default BUFFER_API_KEY,
+or whichever variable --key-env names, so a second Buffer account is a second
+variable rather than a second checkout. It is never printed, never logged, and
+never committed. buffer_client.api_key() is NOT touched: that is shared
+production code on the LinkedIn scheduling path.
 """
 
 import argparse
@@ -42,6 +45,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_URL = "https://api.buffer.com/graphql"
+
+#: Which env var the key came from, for error messages only — never the key
+#: itself. Set by main() from --key-env so a 401 names the variable the operator
+#: actually passed rather than the default they may not be using.
+KEY_ENV_VAR = "BUFFER_API_KEY"
 USAGE_LOG = "api_usage.jsonl"
 TRANSCRIPT = ".harvest/buffer_spike_transcript.jsonl"
 
@@ -103,7 +111,8 @@ def gql(key, query, variables=None, label=""):
 
     print("  [%s] HTTP %s in %ss" % (label or "gql", resp.status_code, elapsed))
     if resp.status_code == 401:
-        raise BufferError("401 - the API key was rejected. Check BUFFER_API_KEY.")
+        raise BufferError("401 - the API key was rejected. Check %s."
+                          % KEY_ENV_VAR)
     if body.get("errors"):
         # Surfaced, not swallowed: a GraphQL 200 with an errors array is a
         # failure that looks like a success to anything checking status codes.
@@ -316,7 +325,7 @@ mutation CreateSpikePost($input: CreatePostInput!) {
 
 
 def build_input(channel_id, text, image_url, due_at, first_comment,
-                service="linkedin"):
+                service="linkedin", thread_text=None):
     """The one call that has to carry all four things at once.
 
     Every field here was checked against the live schema, because four of them
@@ -363,6 +372,22 @@ def build_input(channel_id, text, image_url, due_at, first_comment,
             print("  (first comment ignored: %s has no firstComment field; "
                   "X threads via metadata.twitter.thread — see "
                   ".dev/FINDING_x_buffer_thread.md)" % service)
+
+    if thread_text:
+        if (service or "").lower() == "linkedin":
+            print("  (--thread-text ignored: LinkedIn has no thread field; its "
+                  "self-reply is firstComment)")
+        else:
+            # `thread` is [ThreadedPostInput!] — a LIST, read off the recorded
+            # introspection rather than guessed, so one reply is a list of one.
+            #
+            # `assets` inside it is [..]! — REQUIRED and non-null, exactly like
+            # CreatePostInput.assets. Omitting it for a text-only reply is a
+            # schema error, not a default, which is the same trap that failed
+            # the first createPost attempt. Send [].
+            payload.setdefault("metadata", {})["twitter"] = {
+                "thread": [{"text": thread_text, "assets": []}]
+            }
     return payload
 
 
@@ -581,6 +606,11 @@ def main():
     ap.add_argument("--create", action="store_true",
                     help="actually schedule a post. WITHOUT THIS NOTHING IS "
                          "CREATED - createPost schedules on a real account.")
+    ap.add_argument("--key-env", default="BUFFER_API_KEY", metavar="VAR",
+                    help="environment variable holding the Buffer key "
+                         "(default BUFFER_API_KEY). One Buffer account per "
+                         "variable, so a second account is a second variable "
+                         "in .env rather than a second checkout.")
     ap.add_argument("--service", default="linkedin",
                     help="which network's channel to target: linkedin (default) "
                          "or x. Buffer still calls X 'twitter' internally and "
@@ -595,6 +625,13 @@ def main():
     ap.add_argument("--text", default="Buffer API spike - scheduled post test.")
     ap.add_argument("--first-comment",
                     default="Spike first comment: https://example.com/the-link")
+    ap.add_argument("--thread-text", default=None, metavar="TEXT",
+                    help="X ONLY. With --create, attach this as a threaded "
+                         "self-reply via metadata.twitter.thread. Omit it and "
+                         "--create sends NO metadata at all (the base post). "
+                         "Running both, in that order, is what settles whether "
+                         "the reply is free or paid — see "
+                         ".dev/FINDING_x_buffer_thread.md")
     ap.add_argument("--no-first-comment", action="store_true",
                     help="omit metadata.firstComment entirely - the FREE-PLAN "
                          "shape, since Buffer paywalls that field. This is the "
@@ -614,12 +651,22 @@ def main():
     if args.check_image_url:
         return 0 if check_image_url(args.check_image_url) else 1
 
-    key = os.getenv("BUFFER_API_KEY")
+    # Resolved HERE, in the spike, from whichever variable --key-env names.
+    # buffer_client.api_key() is deliberately not touched: it is shared
+    # production code on the LinkedIn scheduling path, and a spike proving out
+    # multi-account must not change how the working account resolves its key.
+    global KEY_ENV_VAR
+    KEY_ENV_VAR = args.key_env
+    key = (os.getenv(args.key_env) or "").strip()
     if not key:
-        print("BUFFER_API_KEY is not set. Add it to .env (never commit it):")
-        print("    BUFFER_API_KEY=...")
+        print("%s is not set (or is empty). Add it to .env, never commit it:"
+              % args.key_env)
+        print("    %s=..." % args.key_env)
+        print("\nThe variable is named by --key-env; the default is "
+              "BUFFER_API_KEY.")
         return 2
-    print("Buffer spike - key loaded (%d chars, never printed)" % len(key))
+    print("Buffer spike - key loaded from %s (%d chars, never printed)"
+          % (args.key_env, len(key)))
     print("transcript: %s" % TRANSCRIPT)
 
     if args.watch_post:
@@ -661,7 +708,8 @@ def main():
     text = "%s #automation" % args.text
     first_comment = None if args.no_first_comment else args.first_comment
     payload = build_input(channel_id, text, args.image_url, due_at,
-                          first_comment, service=args.service)
+                          first_comment, service=args.service,
+                          thread_text=args.thread_text)
     if args.no_first_comment:
         print("\n  --no-first-comment: metadata is omitted entirely, which is "
               "the free-plan shape.")
