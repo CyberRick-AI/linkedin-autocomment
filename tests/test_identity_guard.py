@@ -314,45 +314,60 @@ def _cli():
 
 @pytest.fixture
 def x_run(tmp_path, monkeypatch):
-    """An X schedule run with everything mocked except the guard."""
+    """A real X schedule run with only the BUFFER boundary mocked.
+
+    Phase 3 wired the guard into the CLI, and these tests mocked schedule_pass
+    away — which proved the CLI called a guard, not that the guard fires on the
+    path that creates posts. Phase 4a moved it into schedule_pass, the
+    chokepoint every caller shares, so these now run the REAL schedule_pass and
+    watch createPost instead.
+    """
     cli = _cli()
     csv_path = tmp_path / "calendar.csv"
     csv_path.write_text(
         "date,time_window,post_text,topic,tags,image_path,first_comment_link\n"
-        "2036-11-02,09:00-11:00,A post.,t,#a,,\n", encoding="utf-8")
+        "2036-11-02,morning,A short post about llm evals.,t,,,"
+        "https://example.com/x\n", encoding="utf-8")
 
-    scheduled = []
-    monkeypatch.setattr(cli.cp, "schedule_pass",
-                        lambda *a, **k: scheduled.append(a) or [])
-    monkeypatch.setattr(cli.cp, "read_rows", lambda p: [{"post_text": "A post."}])
-    monkeypatch.setattr(cli.cp, "PipelineState", lambda profile_name=None: None)
+    created = []
 
-    def run(identity_slug, channel_name="AI_Fun_times"):
+    def fake_create(channel_id, body, image_url, when, key=None, session=None):
+        created.append({"channel_id": channel_id, "body": body,
+                        "image": image_url, "key": key})
+        return {"id": "p1", "status": "scheduled", "dueAt": when}
+
+    monkeypatch.setattr(cli.cp.bc, "create_post", fake_create)
+
+    def run(identity_slug, channel_name="AI_Fun_times", platform="x"):
         monkeypatch.setattr(cli.pm, "resolve_scheduled", lambda p, plat: {
-            "platform": plat, "api_key": "k", "api_key_env": "BUFFER_API_KEY_X",
-            "channel_id": "chan_x", "identity_slug": identity_slug,
+            "platform": plat, "api_key": "x-key", "channel_id": "chan_x",
+            "api_key_env": "BUFFER_API_KEY_X", "identity_slug": identity_slug,
             "drain": None})
         monkeypatch.setattr(cli.cp.bc, "get_channel",
                             lambda cid, key=None, session=None: {
                                 "id": cid, "name": channel_name,
                                 "externalLink": "https://x.com/%s" % channel_name})
-        monkeypatch.setattr("sys.argv", ["run_scheduled_posts.py", "schedule",
-                                         "--platform", "x", "--profile", "p",
-                                         "--csv", str(csv_path)])
+        monkeypatch.setattr(cli.cp.pm, "get_data_dir",
+                            lambda profile_name=None, subdir=None: str(tmp_path))
+        argv = ["run_scheduled_posts.py", "schedule", "--profile", "p",
+                "--csv", str(csv_path)]
+        if platform:
+            argv += ["--platform", platform]
+        monkeypatch.setattr("sys.argv", argv)
         return cli.main()
 
-    run.scheduled = scheduled
+    run.created = created
     return run
 
 
 def test_a_wrong_identity_aborts_the_x_run_before_anything_is_created(x_run,
                                                                       capsys):
-    """The acceptance case. Nothing may be scheduled."""
+    """The acceptance case, now against the REAL schedule_pass."""
     rc = x_run(identity_slug="someone_else")
     out = capsys.readouterr().out
 
     assert rc == 2
-    assert x_run.scheduled == [], "it scheduled despite the identity mismatch"
+    assert x_run.created == [], "it created a post despite the mismatch"
     assert "REFUSING" in out
     assert "someone_else" in out and "AI_Fun_times" in out
     assert "Nothing was created" in out
@@ -361,44 +376,37 @@ def test_a_wrong_identity_aborts_the_x_run_before_anything_is_created(x_run,
 def test_an_empty_identity_aborts_the_x_run(x_run, capsys):
     rc = x_run(identity_slug="")
     assert rc == 2
-    assert x_run.scheduled == []
+    assert x_run.created == []
     assert "REFUSING" in capsys.readouterr().out
 
 
-def test_a_matching_identity_lets_the_x_run_proceed(x_run, capsys):
+def test_a_matching_identity_lets_the_x_run_create_the_post(x_run):
     """The guard must not be so strict it blocks the correct account."""
     rc = x_run(identity_slug="AI_Fun_times")
-    out = capsys.readouterr().out
     assert rc == 0
-    assert len(x_run.scheduled) == 1, "the run should have scheduled"
-    assert "identity confirmed" in out
+    assert len(x_run.created) == 1
+    assert x_run.created[0]["channel_id"] == "chan_x"
+    # The resolved X key reached Buffer, not LinkedIn's.
+    assert x_run.created[0]["key"] == "x-key"
 
 
-def test_the_linkedin_schedule_path_is_not_gated_at_schedule_time(tmp_path,
-                                                                  monkeypatch):
+def test_the_x_post_carries_the_link_in_its_body(x_run):
+    """Phase 1: the thread drops the image, so X puts the link in the body."""
+    x_run(identity_slug="AI_Fun_times")
+    assert "https://example.com/x" in x_run.created[0]["body"]
+
+
+def test_the_linkedin_schedule_path_is_not_gated_at_schedule_time(x_run):
     """Explicitly out of scope this phase.
 
-    Adding a schedule-time channel check to the production LinkedIn flow would
-    break it if Buffer names that channel anything but the exact vanity slug,
-    and that has not been verified against the prod channel. Logged in BACKLOG.
-    """
-    cli = _cli()
-    csv_path = tmp_path / "c.csv"
-    csv_path.write_text("date,time_window,post_text,topic,tags,image_path,"
-                        "first_comment_link\n2036-11-02,09:00-11:00,A,t,#a,,\n",
-                        encoding="utf-8")
-    asked = []
-    monkeypatch.setattr(cli.cp.bc, "get_channel",
-                        lambda *a, **k: asked.append(a) or {"name": "whatever"})
-    monkeypatch.setattr(cli.cp, "schedule_pass", lambda *a, **k: [])
-    monkeypatch.setattr(cli.cp, "read_rows", lambda p: [{"post_text": "A"}])
-    monkeypatch.setattr(cli.cp, "PipelineState", lambda profile_name=None: None)
-    monkeypatch.setattr(cli.pm, "resolve_scheduled", lambda p, plat: {
-        "platform": plat, "api_key": "k", "api_key_env": "BUFFER_API_KEY",
-        "channel_id": "chan_li", "identity_slug": "example-person-one",
-        "drain": None})
-    monkeypatch.setattr("sys.argv", ["run_scheduled_posts.py", "schedule",
-                                     "--profile", "p", "--csv", str(csv_path)])
+    A schedule-time channel check on the production LinkedIn flow would break
+    it if Buffer names that channel anything but the exact vanity slug, and
+    that has not been verified against prod. Logged in BACKLOG.
 
-    assert cli.main() == 0
-    assert asked == [], "LinkedIn must not have gained a schedule-time check"
+    A slug that would FAIL the X guard must still schedule fine on LinkedIn.
+    """
+    rc = x_run(identity_slug="not-the-channel-name", platform=None)
+    assert rc == 0
+    assert len(x_run.created) == 1, "LinkedIn should have scheduled"
+    # LinkedIn's body must NOT carry the link - its first comment does.
+    assert "https://example.com/x" not in x_run.created[0]["body"]

@@ -97,7 +97,8 @@ def main():
     channel_id = args.channel_id or resolved["channel_id"]
     expect_identity = args.expect_identity or resolved["identity_slug"]
 
-    state = cp.PipelineState(profile_name=args.profile)
+    state = cp.PipelineState(profile_name=args.profile,
+                             platform=args.platform)
 
     if args.pass_name == "status":
         print(cp.summarize(
@@ -114,51 +115,45 @@ def main():
                 "no Buffer channel id: pass --channel-id, or set the "
                 "buffer_channel_id for profile %r on platform %r"
                 % (args.profile, args.platform))
-        # THE IDENTITY GUARD, for a platform that never drives a browser.
-        #
-        # LinkedIn's guard fires at COMMENT time, because that is when it acts
-        # as somebody. X's only action is the scheduled post, so its guard has
-        # to fire here — before createPost, once per run, one request.
-        #
-        # A wrong channel id with a valid key publishes to the wrong account and
-        # there is no undo, so this refuses the whole run rather than scheduling
-        # a subset and reporting a problem afterwards.
-        #
-        # LinkedIn is deliberately NOT gated here: adding a schedule-time check
-        # to the production flow would break it if Buffer names that channel
-        # anything but the exact vanity slug, and that has not been verified
-        # against the prod channel. See .dev/BACKLOG.md.
-        if args.platform != pm.SCHEDULED_DEFAULT_PLATFORM:
-            ok, detail = cp.verify_identity(
-                args.platform, expect_identity, channel_id=channel_id,
-                key=resolved["api_key"])
-            if not ok:
-                print("REFUSING to schedule on %s: %s" % (args.platform, detail))
-                print("Nothing was created.")
-                return 2
-            print("identity confirmed on %s: channel posts as %r"
-                  % (args.platform, detail))
-
         rows = cp.read_rows(args.csv)
         print("read %d rows from %s" % (len(rows), args.csv))
-        results = cp.schedule_pass(rows, channel_id, state,
-                                   profile_name=args.profile,
-                                   key=resolved["api_key"])
+        # The identity guard now lives INSIDE schedule_pass, so every caller
+        # is covered rather than just this one. It raises rather than returning
+        # a value that could be ignored.
+        try:
+            results = cp.schedule_pass(rows, channel_id, state,
+                                       profile_name=args.profile,
+                                       key=resolved["api_key"],
+                                       platform=args.platform,
+                                       identity_slug=expect_identity)
+        except cp.IdentityRefused as exc:
+            print("REFUSING: %s" % exc)
+            return 2
         print(cp.summarize(results, []))
         failed = [r for r in results if r.get("status") == cp.FAILED]
         return 1 if failed else 0
 
-    # The refusal STAYS. verify_identity() returns True on an empty slug, so
-    # this guard is the thing standing between an unconfigured profile and a
-    # comment posted as the wrong real person. Defaulting from config widened
-    # where the slug may come from; it did not make the slug optional.
+    # Checked FIRST, because it is the more specific answer. Asking an X run
+    # to set an identity_slug sends the operator to fix a config field that
+    # would not have helped: X has no comment pass at all.
+    if args.platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        print("REFUSING: the comment pass is LinkedIn-only. On %s the link "
+              "rides in the post body, so there is nothing left to comment "
+              "and no browser to comment with." % args.platform)
+        return 2
+
+    # The refusal STAYS. An empty slug now fails closed inside
+    # verify_identity too, but this one names the fix, and it stops the run
+    # before a browser is ever opened.
     if not expect_identity:
         print("REFUSING: no expected identity. Pass --expect-identity, or "
               "set scheduled_posting.identity_slug for profile %r.\n"
               "The default browser profile is the real account, and a "
               "comment on a live post cannot be undone." % args.profile)
         return 2
+
     results = cp.comment_pass(state, profile_name=args.profile,
+                              platform=pm.SCHEDULED_DEFAULT_PLATFORM,
                               expect_slug=expect_identity,
                               wait=args.wait)
     print(cp.summarize([], results))
