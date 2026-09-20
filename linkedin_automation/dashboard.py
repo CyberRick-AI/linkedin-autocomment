@@ -1511,9 +1511,19 @@ def scheduled_add_rows(profile_name):
     })
 
 
-def _scheduled_channel_id(profile_name):
-    cfg = (pm.get_profile_config(profile_name) or {}).get("scheduled_posting", {})
-    return (cfg.get("buffer_channel_id") or "").strip()
+def _scheduled_channel_id(profile_name, platform=pm.SCHEDULED_DEFAULT_PLATFORM):
+    """The Buffer channel this (profile, platform) posts to.
+
+    Still the single config read for the dashboard AND the drain — the drain
+    takes this function by injection and never reads config itself — but the
+    answer now comes from :func:`profile_manager.resolve_scheduled` instead of
+    being spelled out here, so the CLI cannot drift from it.
+
+    ``platform`` defaults to LinkedIn, and for LinkedIn the resolver reads the
+    same flat fields with the same expression this function used, so every
+    existing caller is unchanged.
+    """
+    return pm.resolve_scheduled(profile_name, platform)["channel_id"]
 
 
 @app.route('/api/scheduled/<profile_name>/schedule/preflight', methods=['GET'])

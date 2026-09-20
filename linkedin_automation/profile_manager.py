@@ -371,6 +371,125 @@ def reset_profile_config(profile_name: str = None) -> Dict:
     return default
 
 
+# ─── Scheduled-posting settings, per (profile, platform) ─────────────────────
+#
+# ONE resolver, so there is one answer to "which channel, which key, which
+# identity". Before this there were two independent sources — the dashboard read
+# the flat config and tools/run_scheduled_posts.py took them as CLI arguments —
+# and two sources are two chances to post to the wrong account.
+#
+# The shape is deliberately backward-compatible. A profile's flat
+# `scheduled_posting` fields ARE the LinkedIn settings; they did not move, so
+# nothing migrates and LinkedIn's resolution is the expression it always was.
+# Another platform gets an entry under `scheduled_posting.platforms.<name>`.
+
+#: The platform whose settings live in the flat fields, for historical reasons.
+SCHEDULED_DEFAULT_PLATFORM = "linkedin"
+
+#: Where LinkedIn's Buffer key comes from. Matches buffer_client.api_key(), and
+#: is the fallback recorded in the resolved dict so a caller can say which
+#: variable it wanted if the key turns out to be missing.
+SCHEDULED_DEFAULT_KEY_ENV = "BUFFER_API_KEY"
+
+
+class ScheduledConfigError(RuntimeError):
+    """A (profile, platform) cannot be resolved into usable settings."""
+
+
+def resolve_scheduled(profile_name: str = None,
+                      platform: str = SCHEDULED_DEFAULT_PLATFORM,
+                      env=None) -> Dict:
+    """Resolve the scheduled-posting settings for one ``(profile, platform)``.
+
+    Returns ``{platform, api_key, api_key_env, channel_id, identity_slug,
+    drain}``.
+
+    **LinkedIn resolves exactly as it did before this function existed.** Its
+    settings are the flat `scheduled_posting` fields, read with the same
+    ``(x or "").strip()`` expressions the dashboard used, and its key is the
+    bare ``BUFFER_API_KEY``. `tests/fixtures/scheduled_resolution_golden.json`
+    is a snapshot taken from the pre-change code and is asserted against, so a
+    drift here fails rather than being argued about.
+
+    **The key is resolved but NOT required.** For LinkedIn a missing
+    ``BUFFER_API_KEY`` yields ``api_key=None`` rather than raising, because the
+    pre-change ``_scheduled_channel_id`` never touched the key and asking for a
+    channel id must not start failing on an unrelated variable. A caller that
+    needs the key passes it to ``buffer_client``, whose ``key or api_key()``
+    fallback raises the message it always did.
+
+    **An overlaid platform is stricter, because it has no fallback.** Its key
+    comes from the environment variable its overlay NAMES
+    (``buffer_api_key_env``), and a missing or blank one raises here, naming the
+    variable — there is no bare default to silently land on.
+
+    **An unknown platform raises rather than falling back to the flat fields.**
+    Returning LinkedIn's channel for ``platform="x"`` because of a typo would
+    publish X content to LinkedIn. That failure is unrecoverable and silent,
+    which is the worst combination, so a platform that is not LinkedIn and has
+    no overlay is an error.
+    """
+    env = os.environ if env is None else env
+    platform = (platform or SCHEDULED_DEFAULT_PLATFORM).strip().lower()
+
+    section = (get_profile_config(profile_name) or {}).get("scheduled_posting")
+    section = section if isinstance(section, dict) else {}
+    overlays = section.get("platforms")
+    overlays = overlays if isinstance(overlays, dict) else {}
+    overlay = overlays.get(platform)
+
+    if platform == SCHEDULED_DEFAULT_PLATFORM:
+        # The legacy path, unchanged. Note it reads the FLAT fields even if a
+        # "linkedin" overlay were added later: moving LinkedIn under the
+        # overlay is a migration, and this function does not perform one.
+        return {
+            "platform": platform,
+            "api_key": (env.get(SCHEDULED_DEFAULT_KEY_ENV) or "").strip() or None,
+            "api_key_env": SCHEDULED_DEFAULT_KEY_ENV,
+            "channel_id": (section.get("buffer_channel_id") or "").strip(),
+            "identity_slug": (section.get("identity_slug") or "").strip(),
+            "drain": section.get("drain"),
+        }
+
+    if not isinstance(overlay, dict):
+        raise ScheduledConfigError(
+            "profile %r has no scheduled_posting.platforms.%s section, so there "
+            "are no %s settings to use. Refusing to fall back to the flat "
+            "fields: those are LinkedIn's, and using them here would publish to "
+            "LinkedIn. Known platforms: %s"
+            % (profile_name or get_default_profile_name(), platform, platform,
+               ", ".join(sorted([SCHEDULED_DEFAULT_PLATFORM] + list(overlays)))))
+
+    key_env = (overlay.get("buffer_api_key_env") or "").strip()
+    if not key_env:
+        raise ScheduledConfigError(
+            "scheduled_posting.platforms.%s has no buffer_api_key_env, so there "
+            "is no way to know which environment variable holds this account's "
+            "Buffer key. Set it (e.g. BUFFER_API_KEY_%s)."
+            % (platform, platform.upper()))
+
+    api_key = (env.get(key_env) or "").strip()
+    if not api_key:
+        raise ScheduledConfigError(
+            "%s is not set (or is empty), so the Buffer key for platform %r on "
+            "profile %r cannot be resolved. Add it to .env — it is never "
+            "committed — or change scheduled_posting.platforms.%s."
+            "buffer_api_key_env to name the variable that holds it."
+            % (key_env, platform, profile_name or get_default_profile_name(),
+               platform))
+
+    return {
+        "platform": platform,
+        "api_key": api_key,
+        "api_key_env": key_env,
+        "channel_id": (overlay.get("buffer_channel_id") or "").strip(),
+        "identity_slug": (overlay.get("identity_slug") or "").strip(),
+        # Falls back to the flat drain so a platform that does not override it
+        # still gets a usable dict rather than None.
+        "drain": overlay.get("drain", section.get("drain")),
+    }
+
+
 # ─── Auto-migrate from .env ──────────────────────────────────────────────────
 
 def auto_migrate_from_env():
