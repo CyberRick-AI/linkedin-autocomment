@@ -114,6 +114,31 @@ def main():
                 "no Buffer channel id: pass --channel-id, or set the "
                 "buffer_channel_id for profile %r on platform %r"
                 % (args.profile, args.platform))
+        # THE IDENTITY GUARD, for a platform that never drives a browser.
+        #
+        # LinkedIn's guard fires at COMMENT time, because that is when it acts
+        # as somebody. X's only action is the scheduled post, so its guard has
+        # to fire here — before createPost, once per run, one request.
+        #
+        # A wrong channel id with a valid key publishes to the wrong account and
+        # there is no undo, so this refuses the whole run rather than scheduling
+        # a subset and reporting a problem afterwards.
+        #
+        # LinkedIn is deliberately NOT gated here: adding a schedule-time check
+        # to the production flow would break it if Buffer names that channel
+        # anything but the exact vanity slug, and that has not been verified
+        # against the prod channel. See .dev/BACKLOG.md.
+        if args.platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+            ok, detail = cp.verify_identity(
+                args.platform, expect_identity, channel_id=channel_id,
+                key=resolved["api_key"])
+            if not ok:
+                print("REFUSING to schedule on %s: %s" % (args.platform, detail))
+                print("Nothing was created.")
+                return 2
+            print("identity confirmed on %s: channel posts as %r"
+                  % (args.platform, detail))
+
         rows = cp.read_rows(args.csv)
         print("read %d rows from %s" % (len(rows), args.csv))
         results = cp.schedule_pass(rows, channel_id, state,

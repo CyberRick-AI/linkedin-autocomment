@@ -296,7 +296,125 @@ def profile_slug(url):
     return None
 
 
-def verify_identity(poster, expect_slug):
+def channel_handle(channel):
+    """The account handle a Buffer channel actually posts as, or None.
+
+    Buffer does not expose a field called "handle". ``name`` carries it for X
+    (the spike's channel listing showed ``AI_Fun_times service=twitter``), and
+    ``externalLink`` carries the profile URL, whose last segment is the same
+    handle. Both are read, in that order, so the check does not depend on which
+    one Buffer happens to populate for a given service.
+
+    ``displayName`` is deliberately NOT used: it is a human-facing label ("AI
+    Fun Times"), not an identity, and accepting it would let a guard pass on a
+    string nobody posts as.
+    """
+    if not isinstance(channel, dict):
+        return None
+    name = (channel.get("name") or "").strip().lstrip("@")
+    if name:
+        return name
+    link = (channel.get("externalLink") or "").strip().rstrip("/")
+    if link:
+        tail = link.split("/")[-1].strip().lstrip("@")
+        if tail and "." not in tail:          # not a bare domain
+            return tail
+    return None
+
+
+def verify_channel_identity(expect_slug, channel):
+    """Does this Buffer channel post as ``expect_slug``? Pure; no network.
+
+    The Buffer-side half of the guard, kept separate from fetching so it can be
+    unit-tested against a dict and reused by any platform that schedules through
+    Buffer. LinkedIn does not use it yet — see .dev/BACKLOG.md for why that is a
+    later, separately-verified change and not a free win.
+
+    Comparison is EXACT after case-folding, because X handles are
+    case-insensitive but not otherwise fuzzy. Nothing substring-matches here:
+    the LinkedIn guard learned that lesson when ``example-person`` matched
+    ``example-person-011011``, a different human.
+    """
+    want = (expect_slug or "").strip().lstrip("@").lower()
+    if not want:
+        return False, ("no expected identity configured - refusing to act as "
+                       "this channel")
+
+    got = channel_handle(channel)
+    if not got:
+        return False, ("Buffer did not say which account this channel posts as "
+                       "(no name or externalLink), so the identity cannot be "
+                       "confirmed - refusing")
+
+    if got.lower() == want:
+        return True, got
+    return False, ("channel posts as %r, expected %r - refusing to schedule"
+                   % (got, expect_slug))
+
+
+def verify_buffer_identity(expect_slug, channel_id, key=None, session=None,
+                           fetch=None):
+    """Fetch the channel and confirm it posts as ``expect_slug``.
+
+    ONE request, once per run, before anything is created. A wrong channel id
+    with a valid key would otherwise publish to the wrong account and there is
+    no undo.
+
+    ``fetch`` is injectable so this is testable without a network, the same way
+    ``reconcile_published`` takes one.
+    """
+    fetch = fetch or bc.get_channel
+    try:
+        channel = fetch(channel_id, key=key, session=session)
+    except Exception as exc:
+        return False, ("could not confirm the Buffer channel's identity: %s"
+                       % exc)
+    return verify_channel_identity(expect_slug, channel)
+
+
+def verify_identity(platform, expect_slug, poster=None, channel_id=None,
+                    key=None, session=None, fetch_channel=None):
+    """Confirm we are about to act as the account we mean to act as.
+
+    Platform-dispatched, because the two platforms act at different moments and
+    a guard must fire before ITS action, not before some other platform's:
+
+    * **linkedin** drives a browser and acts when it comments, so the guard is
+      the existing ``/in/me/`` check at comment time. Unchanged.
+    * **x** never drives a browser. Its only action is the scheduled post, so
+      the guard is a Buffer channel-handle check at SCHEDULE time, before any
+      ``createPost``.
+
+    **An empty slug now fails CLOSED, on both paths.** It used to return True
+    with "no expected identity configured", which meant an unconfigured profile
+    had no protection at all from the one control standing between this tool and
+    posting as the wrong real person. A guard whose default is "allow" is a
+    guard that is off. The CLI already refused to run a comment pass without a
+    slug; that refusal was the only thing making the open default survivable,
+    and it did not cover any other caller.
+    """
+    want = (expect_slug or "").strip()
+    if not want:
+        return False, ("no expected identity configured - refusing to act. Set "
+                       "scheduled_posting.identity_slug (or the platform's "
+                       "overlay) for this profile.")
+
+    platform = (platform or pm.SCHEDULED_DEFAULT_PLATFORM).strip().lower()
+
+    if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        if not channel_id:
+            return False, ("no Buffer channel to check the %s identity against "
+                           "- refusing" % platform)
+        return verify_buffer_identity(want, channel_id, key=key,
+                                      session=session, fetch=fetch_channel)
+
+    if poster is None:
+        return False, ("no browser session to confirm the LinkedIn identity "
+                       "with - refusing")
+    return _verify_identity_linkedin(poster, want)
+
+
+def _verify_identity_linkedin(poster, expect_slug):
     """Confirm the browser session is the account we mean to act as.
 
     The DEFAULT profile is the real account. Commenting from the wrong identity
@@ -311,8 +429,8 @@ def verify_identity(poster, expect_slug):
     person. The one guard standing between this tool and commenting as the
     wrong real human cannot be the loosest comparison available.
     """
-    if not expect_slug:
-        return True, "no expected identity configured"
+    # Reached only with a non-empty slug: the dispatcher refuses an empty one
+    # for every platform, so this no longer has an open default.
     want = expect_slug.strip().lower().rstrip("/")
     # Tolerate a whole URL in the config as well as a bare slug.
     want = profile_slug(want) or want
@@ -663,7 +781,7 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
 
 def comment_pass(state, key=None, session=None, poster=None, ledger=None,
                  profile_name=None, expect_slug=None, wait=False,
-                 wait_timeout=1800):
+                 wait_timeout=1800, platform=None):
     """Sweep for published posts and add their first comments.
 
     Non-blocking by default: a row whose post has not published yet is left
@@ -729,7 +847,8 @@ def comment_pass(state, key=None, session=None, poster=None, ledger=None,
                 continue
 
         if not identity_checked:
-            ok, detail = verify_identity(poster, expect_slug)
+            ok, detail = verify_identity(platform, expect_slug,
+                                         poster=poster)
             if not ok:
                 logger.error("IDENTITY GUARD: %s", detail)
                 for k2, _ in pending:
