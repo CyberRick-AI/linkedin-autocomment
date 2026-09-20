@@ -7,6 +7,7 @@ browser/network boundary is never crossed, and no OpenAI/LinkedIn calls happen.
 import pytest
 
 from linkedin_automation import profile_manager as pm
+from linkedin_automation import buffer_client  # noqa: E402
 from linkedin_automation import dashboard as linkedin_dashboard
 
 
@@ -49,6 +50,56 @@ def _dummy_api_keys(monkeypatch):
     """
     for var in API_KEY_ENV_VARS:
         monkeypatch.setenv(var, DUMMY_API_KEY)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_buffer_calls(tmp_path, monkeypatch):
+    """Make an outbound Buffer request impossible for EVERY test — no exceptions.
+
+    Same shape and same reasoning as ``_dummy_api_keys``: the suite claimed to be
+    offline and was offline only by coincidence. Eight tests in
+    ``test_scheduled_ui.py`` really did reach ``api.buffer.com``, through the
+    queue endpoint's poll-on-render reconcile, and nothing failed — the only
+    symptom was a line in ``api_usage.jsonl``. A guard that produces no failure
+    is not a guard.
+
+    This closes it at the TRANSPORT, which is the one place every Buffer call
+    must pass through, so a future caller reaching the network fails loudly
+    instead of quietly spending the 3,000-request/30-day budget and making the
+    result depend on a real key, a network and a third party's uptime.
+
+    It patches the HTTP transport rather than ``gql``, because ``gql`` itself is
+    legitimately exercised: ``test_buffer_client.py`` drives it with a fake
+    ``session`` to test status handling, retries and the usage log, and never
+    reaches the network. ``gql`` resolves ``(session or requests).post``, so
+    replacing the module's ``requests`` blocks exactly the calls that would go
+    out and leaves the session-injected ones alone.
+
+    A test that wants Buffer behaviour mocks the boundary it uses —
+    ``posts_by_status``, ``get_channel``, ``scheduled_slots``, or an injected
+    ``session`` — which is what the rest of the suite already does.
+    """
+    class _RefusesToLeaveTheMachine(object):
+        RequestException = buffer_client.requests.RequestException
+
+        @staticmethod
+        def post(url, **kwargs):
+            raise AssertionError(
+                "a test tried to reach %s for real. The suite is hermetic: mock "
+                "the boundary you need (posts_by_status / get_channel / "
+                "scheduled_slots), or inject a fake session, rather than letting "
+                "the request out." % url)
+
+    monkeypatch.setattr(buffer_client, "requests", _RefusesToLeaveTheMachine)
+
+    # And never write to the REAL api_usage.jsonl. `gql` logs BEFORE it sends,
+    # so a refused call still appended a line to a tracked project file — which
+    # is both pollution and a misleading record of spend that never happened.
+    # Tests that assert on the log redirect it themselves; this is the default.
+    monkeypatch.setattr(buffer_client, "USAGE_LOG",
+                        str(tmp_path / "api_usage.jsonl"))
+
+    buffer_client.clear_caches()
 
 
 @pytest.fixture(autouse=True)

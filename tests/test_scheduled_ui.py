@@ -28,6 +28,52 @@ def client():
     return dashboard.app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def fake_reconcile_source(monkeypatch):
+    """Answer the reconcile from a fake, never from api.buffer.com.
+
+    The queue endpoint polls on render: it calls
+    ``csv_pipeline.reconcile_published``, which calls
+    ``buffer_client.posts_by_status`` -> ``get_channel`` -> the network. Eight
+    tests in this module were doing that FOR REAL against the configured
+    channel — spending the 3,000-request/30-day budget on every pytest run and
+    making the result depend on a live key, a network and Buffer's uptime.
+
+    It never failed, which is why it survived: ``_reconcile`` catches every
+    exception so a Buffer outage leaves the queue rendering last-known state
+    rather than an error page. The live call was therefore invisible except as a
+    line in ``api_usage.jsonl``.
+
+    ``posts_by_status`` is the right seam because it is what ``reconcile_published``
+    resolves (``fetch or bc.posts_by_status``) at call time, and it is the same
+    boundary the other endpoints in this file already mock.
+
+    Returns a handle: put ``{post_id: node}`` into ``.sent`` to make Buffer
+    "report" a post as published, and read ``.calls`` to assert what was asked.
+    """
+    class _FakeBuffer(object):
+        def __init__(self):
+            self.sent = {}
+            self.calls = []
+
+    fake = _FakeBuffer()
+
+    def fake_posts_by_status(channel_id, statuses=("sent",), limit=100,
+                             key=None, session=None):
+        fake.calls.append({"channel_id": channel_id,
+                           "statuses": tuple(statuses), "limit": limit,
+                           "key": key})
+        return dict(fake.sent)
+
+    monkeypatch.setattr(dashboard.buffer_client, "posts_by_status",
+                        fake_posts_by_status)
+    # The endpoint memoises per profile for 120s, so without this a test would
+    # inherit the previous test's reconcile result and assert nothing.
+    dashboard._reconcile_cache.clear()
+    yield fake
+    dashboard._reconcile_cache.clear()
+
+
 @pytest.fixture
 def state_file(tmp_path, monkeypatch):
     """Point the pipeline's per-profile state at a temp file with known rows."""
@@ -154,6 +200,87 @@ def test_the_queue_endpoint_writes_nothing(client, state_file):
         assert client.get("/api/scheduled/p/queue").status_code == 200
     assert state_file.read_bytes() == before
     assert os.path.getmtime(state_file) == before_mtime
+
+
+# ─── the reconcile, against the fake rather than the live account ────────────
+#
+# These used to be implicit: the queue endpoint polled Buffer FOR REAL on every
+# render and nothing asserted what came back, because `_reconcile` swallows
+# every exception. The behaviour is now pinned against a fake, so the reconcile
+# path is actually tested instead of merely survived.
+
+def test_the_reconcile_asks_buffer_about_the_configured_channel(
+        client, state_file, fake_reconcile_source):
+    """It must ask about THIS profile's channel, not some default."""
+    client.get("/api/scheduled/p/queue")
+    assert len(fake_reconcile_source.calls) == 1
+    call = fake_reconcile_source.calls[0]
+    assert call["channel_id"] == "chan123"
+    assert call["statuses"] == ("sent",)
+
+
+def test_a_post_buffer_reports_as_sent_is_moved_to_published(
+        client, state_file, fake_reconcile_source):
+    """The whole point of polling on render.
+
+    `k_waiting` is SCHEDULED with post_id p4. Buffer saying p4 is sent must move
+    the row and carry the permalink across.
+    """
+    fake_reconcile_source.sent["p4"] = {
+        "id": "p4", "status": "sent",
+        "sentAt": "2026-09-09T16:02:00.000Z",
+        "externalLink": PERMALINK}
+
+    d = client.get("/api/scheduled/p/queue").get_json()
+
+    assert d["reconcile"]["ran"] is True
+    assert d["reconcile"]["error"] is None
+    # The endpoint reports a COUNT, so the row itself is the evidence.
+    assert d["reconcile"]["changed"] == 1
+    assert d["counts"].get(cp.SCHEDULED, 0) == 0, "it should have left SCHEDULED"
+    published = d["posts"][cp.PUBLISHED]
+    assert len(published) == 1
+    assert published[0]["permalink"] == PERMALINK
+
+
+def test_silence_from_buffer_leaves_every_row_alone(
+        client, state_file, fake_reconcile_source):
+    """Buffer not mentioning a post is not evidence it did not publish."""
+    d = client.get("/api/scheduled/p/queue").get_json()
+    assert d["reconcile"]["changed"] == 0
+    assert d["counts"][cp.SCHEDULED] == 1
+
+
+def test_the_queue_survives_buffer_failing(client, state_file, monkeypatch):
+    """A Buffer outage must render last-known state with a note, not a 500.
+
+    Previously this was only ever exercised by accident, when the live call
+    happened to fail.
+    """
+    def boom(*a, **k):
+        raise RuntimeError("buffer is down")
+    monkeypatch.setattr(dashboard.buffer_client, "posts_by_status", boom)
+    dashboard._reconcile_cache.clear()
+
+    d = client.get("/api/scheduled/p/queue").get_json()
+    assert d["total"] == 4
+    assert "buffer is down" in (d["reconcile"]["error"] or "")
+
+
+def test_the_queue_render_costs_no_api_usage_line(client, state_file):
+    """The regression this cleanup exists for, asserted directly.
+
+    `gql` writes to api_usage.jsonl BEFORE it sends, so a line landing here
+    means a real request was attempted against a real key and a real budget.
+    """
+    # Read the ACTIVE log, which conftest points at a temp file. Checking the
+    # real project file would pass trivially now that nothing can write to it;
+    # this still fails if the render reaches gql.
+    usage = dashboard.buffer_client.USAGE_LOG
+    before = os.path.getsize(usage) if os.path.exists(usage) else 0
+    client.get("/api/scheduled/p/queue")
+    after = os.path.getsize(usage) if os.path.exists(usage) else 0
+    assert after == before, "the queue render reached Buffer's API"
 
 
 def test_an_empty_state_renders_rather_than_erroring(client, tmp_path, monkeypatch):
