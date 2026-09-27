@@ -39,6 +39,7 @@ class LinkedInWorkflowRunner:
         self.skip_comments = args.skip_comments
         self.dual_run = args.dual_run
         self.profile = args.profile  # Profile name for multi-account support
+        self.allow_production = args.allow_production
         
         # Resolve profile-specific data directories
         resolved_name = args.profile or pm.get_default_profile_name() or "default"
@@ -79,9 +80,12 @@ class LinkedInWorkflowRunner:
         
         if self.profile:
             cmd.extend(["--profile", self.profile])
-        
+
+        if self.allow_production:
+            cmd.append("--allow-production")
+
         logger.info(f"Running: {' '.join(cmd)}")
-        
+
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -89,12 +93,18 @@ class LinkedInWorkflowRunner:
             encoding='utf-8',
             errors='replace'
         )
-        
+
         # Print the output
         print(result.stdout)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        
+
+        if result.returncode == pm.EXIT_PRODUCTION_REFUSED:
+            raise RuntimeError(
+                "Post finder refused: production identity guard "
+                "(pass --allow-production if this is intentional)"
+            )
+
         # Check if output file was created
         output_file = self._extract_output_file(result.stdout)
         
@@ -437,7 +447,12 @@ Examples:
         default=None,
         help='LinkedIn profile name to use (uses default if omitted)'
     )
-    
+    parser.add_argument(
+        '--allow-production',
+        action='store_true',
+        help='Allow the post finder to run against a declared PRODUCTION identity'
+    )
+
     args = parser.parse_args()
     
     # Verify environment - check profile manager first, fall back to env vars

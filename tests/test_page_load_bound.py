@@ -110,7 +110,7 @@ def test_one_attempt_no_retry_loop(env):
 def test_the_run_continues_to_the_next_comment(env, monkeypatch, tmp_path):
     page = FakePostPage(timeout_urls={SLOW})
     monkeypatch.setattr(pm, "create_driver",
-                        lambda name=None, headless=False: (page, {}))
+                        lambda name=None, headless=False, allow_production=False: (page, {}))
     txt = tmp_path / "c.txt"
     txt.write_text(comment_fields.comments_to_txt(
         [{"url": u, "comment": "A point %d." % i, "post_preview": "p",
@@ -187,6 +187,10 @@ def test_create_driver_sets_the_bound(monkeypatch, tmp_path):
         "username": "u", "session_dir": str(tmp_path)})
     monkeypatch.setattr(pm, "session_exists", lambda d: True)
     monkeypatch.setattr(pm, "update_last_used", lambda n: None)
+    # Unrelated to what this test asserts (the page-load bound) - give the
+    # production guard a known-dev identity so it does not need real disk
+    # config. See test_production_guard.py for the guard's own coverage.
+    monkeypatch.setattr(pm, "get_identity_slug", lambda n: "some-dev-identity")
 
     driver, _ = pm.create_driver("t")
 

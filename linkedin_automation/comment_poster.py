@@ -162,10 +162,11 @@ class LinkedInCommentPoster:
     # only; the text match against the list is the real proof.
     POSTED_COMMENT_CONTAINER_SELECTOR = "[data-testid*='commentList']"
 
-    def __init__(self, profile_name=None):
+    def __init__(self, profile_name=None, allow_production=False):
         self.profile_name = profile_name
         self.profile = None  # Set during setup_driver
-        
+        self.allow_production = allow_production
+
         self.driver = None
         self.wait = None
         
@@ -254,7 +255,8 @@ class LinkedInCommentPoster:
     def setup_driver(self):
         """Initialize Chrome driver with persistent session via profile manager."""
         self.logger.info("Setting up browser with persistent session...")
-        self.driver, self.profile = pm.create_driver(self.profile_name)
+        self.driver, self.profile = pm.create_driver(
+            self.profile_name, allow_production=self.allow_production)
         self.wait = WebDriverWait(self.driver, 20)
         self.logger.info("Browser started successfully")
     
@@ -1978,14 +1980,17 @@ def main():
     parser.add_argument('--test-url', help='Test with a specific LinkedIn post URL')
     parser.add_argument('--test-comment', default='This is a test comment.', help='Comment text for test mode')
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name (uses default if omitted)')
-    
+    parser.add_argument('--allow-production', action='store_true',
+                         help='Allow running against a declared PRODUCTION identity')
+
     args = parser.parse_args()
-    
+
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    
-    poster = LinkedInCommentPoster(profile_name=args.profile)
-    
+
+    poster = LinkedInCommentPoster(profile_name=args.profile,
+                                    allow_production=args.allow_production)
+
     # Test mode
     if args.test_url:
         print(f"Running in test mode with URL: {args.test_url}")
@@ -1994,8 +1999,12 @@ def main():
             'comment': args.test_comment,
             'preview': 'Test mode'
         }
-        
-        poster.setup_driver()
+
+        try:
+            poster.setup_driver()
+        except pm.ProductionAccessRefused as e:
+            print(f"\n❌ {e}")
+            sys.exit(pm.EXIT_PRODUCTION_REFUSED)
         if poster.login():
             success = poster.post_single_comment(test_comment, force=True)  # Force posting in test mode
             print(f"Test result: {'Success' if success else 'Failed'}")
@@ -2020,6 +2029,9 @@ def main():
     except pm.LoginRequiredError as e:
         print(f"\n❌ {e}")
         sys.exit(pm.EXIT_LOGIN_REQUIRED)
+    except pm.ProductionAccessRefused as e:
+        print(f"\n❌ {e}")
+        sys.exit(pm.EXIT_PRODUCTION_REFUSED)
     except Exception as e:
         print(f"\n❌ {e}")
         sys.exit(pm.EXIT_ERROR)

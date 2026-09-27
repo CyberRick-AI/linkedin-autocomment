@@ -132,7 +132,7 @@ def test_the_run_summary_counts_the_misses(failures, monkeypatch, tmp_path):
     from linkedin_automation import comment_fields
     page = FakePostPage(like_absent_urls={URL, URL2})
     monkeypatch.setattr(pm, "create_driver",
-                        lambda name=None, headless=False: (page, {}))
+                        lambda name=None, headless=False, allow_production=False: (page, {}))
     txt = tmp_path / "c.txt"
     txt.write_text(comment_fields.comments_to_txt(
         [{"url": u, "comment": "A point %d." % i, "post_preview": "p",

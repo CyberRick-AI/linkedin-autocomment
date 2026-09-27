@@ -52,6 +52,16 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_production_guard(monkeypatch):
+    """Never let the developer's real .env decide a test's production-guard
+    outcome — the same hermeticity problem as _dummy_api_keys, for a
+    different pair of variables (see profile_manager.check_production_guard).
+    """
+    monkeypatch.delenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, raising=False)
+    monkeypatch.delenv(pm.ALLOW_PRODUCTION_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_data_root(tmp_path, monkeypatch):
     """Point DATA_ROOT at a temp dir for EVERY test — no exceptions.
 

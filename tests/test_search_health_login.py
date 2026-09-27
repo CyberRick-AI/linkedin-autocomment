@@ -127,7 +127,9 @@ def patch_env(monkeypatch, tmp_path):
     monkeypatch.setattr(pm, "get_data_dir", lambda profile_name=None, subdir=None: str(tmp_path))
 
     def _install(driver):
-        monkeypatch.setattr(pm, "create_driver", lambda profile_name=None: (driver, {}))
+        monkeypatch.setattr(
+            pm, "create_driver",
+            lambda profile_name=None, headless=False, allow_production=False: (driver, {}))
     return _install
 
 

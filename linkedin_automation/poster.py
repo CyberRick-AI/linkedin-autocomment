@@ -290,9 +290,11 @@ class LinkedInPoster:
         "[role='option']",
     ]
 
-    def __init__(self, profile_name: str = None, debug: bool = False):
+    def __init__(self, profile_name: str = None, debug: bool = False,
+                 allow_production: bool = False):
         self.profile_name = profile_name
         self.debug = debug
+        self.allow_production = allow_production
         self.driver = None
         self.wait = None
         self._editor = None
@@ -308,7 +310,8 @@ class LinkedInPoster:
     def setup(self):
         """Setup browser and login."""
         logger.info("Setting up browser...")
-        self.driver, profile = pm.create_driver(self.profile_name)
+        self.driver, profile = pm.create_driver(
+            self.profile_name, allow_production=self.allow_production)
         self.wait = WebDriverWait(self.driver, 20)
 
         if not pm.login(self.driver, profile):
@@ -1395,6 +1398,9 @@ class LinkedInPoster:
             result = self.create_post(text, image_path=image_path)
             hb.human_sleep(2.0, 3.0)
             return result
+        except pm.ProductionAccessRefused:
+            # Distinct from generic errors so the caller can exit with code 3.
+            raise
         except Exception as e:
             logger.error(f"Error: {e}")
             if self.debug:
@@ -1414,6 +1420,8 @@ def main():
     parser.add_argument('--file', type=str, help='Read post text from file')
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
+    parser.add_argument('--allow-production', action='store_true',
+                         help='Allow running against a declared PRODUCTION identity')
 
     parser.add_argument("--image", default=None,
                         help="Path to one image to attach. If attachment cannot "
@@ -1434,8 +1442,13 @@ def main():
     if args.image and not os.path.isfile(args.image):
         parser.error("Image not found: %s" % args.image)
 
-    poster = LinkedInPoster(profile_name=args.profile, debug=args.debug)
-    success = poster.run(text, image_path=args.image)
+    poster = LinkedInPoster(profile_name=args.profile, debug=args.debug,
+                             allow_production=args.allow_production)
+    try:
+        success = poster.run(text, image_path=args.image)
+    except pm.ProductionAccessRefused as e:
+        print(f"\n✗ {e}")
+        sys.exit(pm.EXIT_PRODUCTION_REFUSED)
 
     if success:
         print("\n✓ Post published!")

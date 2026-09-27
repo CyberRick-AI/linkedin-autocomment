@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_LOGIN_REQUIRED = 2
+EXIT_PRODUCTION_REFUSED = 3
 
 
 # ─── Page-load bound ──────────────────────────────────────────────────────────
@@ -57,6 +58,19 @@ class LoginRequiredError(RuntimeError):
 
     Signals "the user must log in manually" (expired or missing persistent
     session) as opposed to a generic runtime failure.
+    """
+
+
+class ProductionAccessRefused(RuntimeError):
+    """Raised when a browser-driving entry point would act as a declared
+    PRODUCTION LinkedIn identity (or an identity that cannot be resolved at
+    all) without explicit authorization.
+
+    Production is declared, never inferred: a profile NAME says nothing about
+    which account it resolves to ("jeff" and "prod" can both be production,
+    and an unregistered profile resolves to no identity at all). Raised from
+    ``check_production_guard``, called by ``create_driver`` before any browser
+    is constructed - refusal must cost nothing. See docs/ARCHITECTURE.md §9.
     """
 
 
@@ -396,6 +410,84 @@ def auto_migrate_from_env():
         add_profile("default", username, password, set_default=True)
 
 
+# ─── Production identity guard ────────────────────────────────────────────────
+# A profile NAME does not say which LinkedIn account it drives - "jeff" and
+# "prod" can both resolve to the real account, and an unregistered profile
+# ("someprofile", "t") resolves to no identity at all. Nothing short of this
+# guard stood between an ad-hoc CLI/module run and acting as the real account.
+# So production is DECLARED here, off config alone, before any browser exists -
+# never inferred from a profile's name or from anything that requires a login.
+
+#: Comma-separated identity_slugs that ARE the real, production LinkedIn
+#: account(s). Loaded from the environment (like every other credential this
+#: module reads via .env) rather than committed to a config file, since a
+#: LinkedIn vanity slug identifies a real person (docs/PRINCIPLES.md §10).
+PRODUCTION_IDENTITY_SLUGS_ENV = "PRODUCTION_IDENTITY_SLUGS"
+
+#: The --allow-production flag's environment equivalent, for a caller that
+#: cannot thread a CLI flag through.
+ALLOW_PRODUCTION_ENV = "LINKEDIN_ALLOW_PRODUCTION"
+
+
+def get_production_identity_slugs() -> set:
+    """The identity_slugs declared as the real, production LinkedIn account(s).
+
+    Never inferred from a profile name - see ProductionAccessRefused.
+    """
+    raw = os.environ.get(PRODUCTION_IDENTITY_SLUGS_ENV, "")
+    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
+def get_identity_slug(profile_name: str) -> str:
+    """The profile's declared identity: ``scheduled_posting.identity_slug`` in
+    its profile_config.json, or "" if never set.
+
+    Declared, not detected - this is a config read, no browser or login
+    required, so the production guard can refuse before either exists.
+    """
+    config = get_profile_config(profile_name)
+    scheduled = config.get("scheduled_posting") or {}
+    return (scheduled.get("identity_slug") or "").strip()
+
+
+def _allow_production_from_env() -> bool:
+    return os.environ.get(ALLOW_PRODUCTION_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def check_production_guard(profile_name: str, allow_production: bool = False) -> None:
+    """Refuse before any browser is created if ``profile_name`` resolves to a
+    declared production identity - or to no identity at all - without
+    explicit authorization.
+
+    An identity that resolves to NOTHING is a refusal, not a pass: "unknown"
+    is not the same as "known dev", and treating it that way is exactly the
+    trap of inferring safety from a profile name. Only a profile with a
+    declared, non-production identity_slug proceeds without ``--allow-production``.
+
+    Raises ProductionAccessRefused. Never raises for a missing/unknown
+    profile_name itself - the caller (create_driver) checks that separately.
+    """
+    allow_production = allow_production or _allow_production_from_env()
+    identity_slug = get_identity_slug(profile_name)
+
+    if not identity_slug:
+        raise ProductionAccessRefused(
+            f"Refusing to drive a browser for profile '{profile_name}': it has "
+            f"no declared identity (scheduled_posting.identity_slug is empty "
+            f"in its profile_config.json). An unresolved identity is not "
+            f"assumed safe - declare identity_slug for this profile before "
+            f"running against it."
+        )
+
+    if identity_slug.lower() in get_production_identity_slugs() and not allow_production:
+        raise ProductionAccessRefused(
+            f"Refusing to drive a browser for profile '{profile_name}': its "
+            f"identity_slug '{identity_slug}' is a declared PRODUCTION "
+            f"identity. Pass --allow-production (or set "
+            f"{ALLOW_PRODUCTION_ENV}=1) to proceed."
+        )
+
+
 # ─── Chrome Driver with Persistent Session ────────────────────────────────────
 
 def session_exists(session_dir: str) -> bool:
@@ -411,26 +503,33 @@ def session_exists(session_dir: str) -> bool:
     return os.path.isdir(default_dir) and bool(os.listdir(default_dir))
 
 
-def create_driver(profile_name: str = None, headless: bool = False) -> Tuple[webdriver.Chrome, Dict]:
+def create_driver(profile_name: str = None, headless: bool = False,
+                   allow_production: bool = False) -> Tuple[webdriver.Chrome, Dict]:
     """
     Create a Chrome driver with persistent session for the given profile.
-    
+
+    ``allow_production`` must be explicitly True (or LINKEDIN_ALLOW_PRODUCTION
+    set) for this to proceed against a declared production identity - see
+    check_production_guard. This is the ONE place every browser-driving entry
+    point in the project funnels through, so it is the single chokepoint for
+    that guard (docs/ARCHITECTURE.md §9).
+
     Returns (driver, profile_info) tuple.
     """
     # Auto-migrate on first use
     auto_migrate_from_env()
-    
+
     # Resolve profile
     if not profile_name:
         profile_name = get_default_profile_name()
-    
+
     if not profile_name:
         raise ValueError(
             "No profile specified and no default set.\n"
             "Run: python linkedin_profile_manager.py add <name> \n"
             "  or use --profile <name>"
         )
-    
+
     profile = get_profile(profile_name)
     if not profile:
         raise ValueError(
@@ -438,7 +537,11 @@ def create_driver(profile_name: str = None, headless: bool = False) -> Tuple[web
             f"Available profiles: {', '.join(load_profiles()['profiles'].keys()) or 'none'}\n"
             f"Run: python linkedin_profile_manager.py add {profile_name}"
         )
-    
+
+    # Refuse BEFORE anything below constructs a browser - a refusal must cost
+    # nothing and leave no session behind.
+    check_production_guard(profile_name, allow_production=allow_production)
+
     logger.info(f"Using profile: '{profile_name}' ({profile['username']})")
 
     # If this profile has no persistent Chrome session yet, tell the user how to
@@ -594,22 +697,23 @@ def login(driver: webdriver.Chrome, profile: Dict) -> bool:
 
 # ─── Convenience function for scripts ─────────────────────────────────────────
 
-def setup_and_login(profile_name: str = None, headless: bool = False) -> Tuple[webdriver.Chrome, Dict, str]:
+def setup_and_login(profile_name: str = None, headless: bool = False,
+                     allow_production: bool = False) -> Tuple[webdriver.Chrome, Dict, str]:
     """
     One-call setup: create driver, login, return (driver, profile, profile_name).
-    
+
     Usage in scripts:
         driver, profile, profile_name = setup_and_login(args.profile)
     """
     auto_migrate_from_env()
-    
+
     if not profile_name:
         profile_name = get_default_profile_name()
-    
+
     if not profile_name:
         raise ValueError("No profile available. Run: python linkedin_profile_manager.py add <name>")
-    
-    driver, profile = create_driver(profile_name, headless=headless)
+
+    driver, profile = create_driver(profile_name, headless=headless, allow_production=allow_production)
     
     if not login(driver, profile):
         driver.quit()
@@ -675,6 +779,8 @@ Examples:
     # Test
     test_parser = subparsers.add_parser('test', help='Test login for a profile')
     test_parser.add_argument('name', nargs='?', help='Profile name (uses default if omitted)')
+    test_parser.add_argument('--allow-production', action='store_true',
+                              help='Allow running against a declared PRODUCTION identity')
     
     # Migrate
     subparsers.add_parser('migrate', help='Migrate credentials from .env to profile')
@@ -778,7 +884,7 @@ Examples:
         
         print(f"Testing login for profile '{profile_name}'...")
         try:
-            driver, profile, _ = setup_and_login(profile_name)
+            driver, profile, _ = setup_and_login(profile_name, allow_production=args.allow_production)
             print(f"\n✅ Login successful for '{profile_name}'!")
             print(f"   Current URL: {driver.current_url}")
             print("   Session will persist for next use.")

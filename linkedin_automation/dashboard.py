@@ -204,6 +204,10 @@ def _scrape_job(job_id, profile_name, max_posts, min_quality):
         "--max-posts", str(max_posts),
         "--min-quality", str(min_quality),
         "--profile", profile_name,
+        # The dashboard IS production doing its job (manual click or
+        # scheduler fire, both routed through this same job body) - unlike an
+        # ad-hoc CLI/module run, it is always authorized. See docs/ARCHITECTURE.md §9.
+        "--allow-production",
     ]
     returncode, _ = run_subprocess(job_id, cmd)
 
@@ -233,6 +237,8 @@ def _post_comments_job(job_id, profile_name, comments_file, count):
         comments_file,
         "--count", str(count),
         "--profile", profile_name,
+        # See _scrape_job: the dashboard is always an authorized caller.
+        "--allow-production",
     ]
     returncode, _ = run_subprocess(job_id, cmd)
 
@@ -879,7 +885,8 @@ def selector_health(profile_name):
     job_id = f"health_{profile_name}_{int(time.time())}"
 
     def do_health(jid, pname):
-        cmd = [sys.executable, "-m", "linkedin_automation.selector_health", "--profile", pname]
+        cmd = [sys.executable, "-m", "linkedin_automation.selector_health",
+               "--profile", pname, "--allow-production"]
         returncode, _ = run_subprocess(jid, cmd)
 
         if returncode == pm.EXIT_LOGIN_REQUIRED:
@@ -936,7 +943,8 @@ def start_connector(profile_name):
             url,
             "--max", str(mx),
             "--pages", str(pg),
-            "--profile", pname
+            "--profile", pname,
+            "--allow-production",
         ]
 
         if nt:
@@ -1091,12 +1099,13 @@ def poster_publish(profile_name):
         from .post_generator import PostGenerator
         gen = PostGenerator(profile_name=pname)
 
+        # The dashboard is always an authorized caller (see _scrape_job).
         if pid:
             log_job(jid, f"Publishing post #{pid}...")
-            success = gen.post_by_id(pid, profile_name=pname)
+            success = gen.post_by_id(pid, profile_name=pname, allow_production=True)
         else:
             log_job(jid, "Publishing next post in queue...")
-            success = gen.post_next(profile_name=pname)
+            success = gen.post_next(profile_name=pname, allow_production=True)
 
         if success:
             log_job(jid, "✓ Post published to LinkedIn!")

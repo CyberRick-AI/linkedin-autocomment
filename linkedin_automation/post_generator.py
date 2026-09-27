@@ -19,6 +19,7 @@ Usage:
 """
 
 import os
+import sys
 import json
 import time
 import random
@@ -553,23 +554,25 @@ Length: {length_instruction}"""
             logger.debug(f"HTML parsing failed: {e}")
             return None
 
-    def post_next(self, profile_name: str = None) -> bool:
+    def post_next(self, profile_name: str = None, allow_production: bool = False) -> bool:
         """Post the next item in the queue to LinkedIn."""
         post = self.queue.get_next()
         if not post:
             logger.info("Queue is empty — nothing to post")
             return False
-        return self._publish(post, profile_name)
+        return self._publish(post, profile_name, allow_production=allow_production)
 
-    def post_by_id(self, post_id: int, profile_name: str = None) -> bool:
+    def post_by_id(self, post_id: int, profile_name: str = None,
+                    allow_production: bool = False) -> bool:
         """Post a specific queued post to LinkedIn."""
         post = self.queue.get_by_id(post_id)
         if not post:
             logger.error(f"Post #{post_id} not found in queue")
             return False
-        return self._publish(post, profile_name)
+        return self._publish(post, profile_name, allow_production=allow_production)
 
-    def _publish(self, post: Dict, profile_name: str = None) -> bool:
+    def _publish(self, post: Dict, profile_name: str = None,
+                 allow_production: bool = False) -> bool:
         """Publish a post to LinkedIn using linkedin_poster."""
         from .poster import LinkedInPoster
 
@@ -583,7 +586,7 @@ Length: {length_instruction}"""
         logger.info(f"Publishing post #{post['id']}...")
         logger.info(f"Text: {text[:100]}...")
 
-        poster = LinkedInPoster(profile_name=pname)
+        poster = LinkedInPoster(profile_name=pname, allow_production=allow_production)
         try:
             poster.setup()
             poster.navigate_to_feed()
@@ -637,6 +640,8 @@ def main():
     post_p = subparsers.add_parser('post', help='Publish next post (or specific post) to LinkedIn')
     post_p.add_argument('--id', type=int, help='Specific post ID to publish')
     post_p.add_argument('--profile', type=str, default=None)
+    post_p.add_argument('--allow-production', action='store_true',
+                         help='Allow running against a declared PRODUCTION identity')
 
     # remove
     rm_p = subparsers.add_parser('remove', help='Remove a post from the queue')
@@ -725,10 +730,16 @@ def main():
     # ── Post ──
     elif args.command == 'post':
         gen = PostGenerator(profile_name=args.profile)
-        if args.id:
-            gen.post_by_id(args.id, profile_name=args.profile)
-        else:
-            gen.post_next(profile_name=args.profile)
+        try:
+            if args.id:
+                gen.post_by_id(args.id, profile_name=args.profile,
+                                allow_production=args.allow_production)
+            else:
+                gen.post_next(profile_name=args.profile,
+                               allow_production=args.allow_production)
+        except pm.ProductionAccessRefused as e:
+            print(f"\n✗ {e}")
+            sys.exit(pm.EXIT_PRODUCTION_REFUSED)
 
     # ── Remove ──
     elif args.command == 'remove':

@@ -283,7 +283,7 @@ def test_the_run_log_uses_the_qualified_id(poster, monkeypatch, tmp_path):
     from linkedin_automation import comment_fields
     page = FakePostPage()
     monkeypatch.setattr(pm, "create_driver",
-                        lambda name=None, headless=False: (page, {}))
+                        lambda name=None, headless=False, allow_production=False: (page, {}))
     monkeypatch.setattr(pm, "login", lambda d, p: True)
     txt = tmp_path / "c.txt"
     txt.write_text(comment_fields.comments_to_txt(

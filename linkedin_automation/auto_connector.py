@@ -270,8 +270,10 @@ class LinkedInAutoConnector:
     INTEROP_OUTLET_SELECTOR = "#interop-outlet"
 
     def __init__(self, profile_name: str = None, max_requests: int = None,
-                 add_note: bool = None, note_text: str = None, debug: bool = False):
+                 add_note: bool = None, note_text: str = None, debug: bool = False,
+                 allow_production: bool = False):
         self.profile_name = profile_name
+        self.allow_production = allow_production
 
         # Per-profile connector config; explicit CLI args (passed in) still win.
         full_config = pm.get_profile_config(profile_name)
@@ -323,7 +325,8 @@ class LinkedInAutoConnector:
     def setup(self):
         """Setup driver and login."""
         logger.info("Setting up browser...")
-        self.driver, profile = pm.create_driver(self.profile_name)
+        self.driver, profile = pm.create_driver(
+            self.profile_name, allow_production=self.allow_production)
         self.wait = WebDriverWait(self.driver, 20)
 
         if not pm.login(self.driver, profile):
@@ -1482,6 +1485,8 @@ Examples:
                         help='Note to add to connection requests (default: connector.note_template from profile config)')
     parser.add_argument('--stats', action='store_true', help='Show daily/weekly connection stats and exit')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--allow-production', action='store_true',
+                         help='Allow running against a declared PRODUCTION identity')
 
     args = parser.parse_args()
 
@@ -1517,7 +1522,8 @@ Examples:
         max_requests=args.max,
         add_note=None,
         note_text=args.note,
-        debug=args.debug
+        debug=args.debug,
+        allow_production=args.allow_production,
     )
 
     results = connector.run(args.search_url, max_pages=args.pages)
@@ -1535,6 +1541,9 @@ Examples:
     # after a crash is what made a dead browser report "Connector finished".
     failure = results.get("failure")
     if failure:
+        if failure.get("type") == "ProductionAccessRefused":
+            logger.error("Refusing production access: %s", failure.get("message"))
+            sys.exit(pm.EXIT_PRODUCTION_REFUSED)
         logger.error("Exiting non-zero: the connector failed during %s (%s)",
                      failure.get("stage"), failure.get("type"))
         sys.exit(1)
