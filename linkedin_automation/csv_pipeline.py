@@ -663,7 +663,7 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
 
 def comment_pass(state, key=None, session=None, poster=None, ledger=None,
                  profile_name=None, expect_slug=None, wait=False,
-                 wait_timeout=1800):
+                 wait_timeout=1800, allow_production=False):
     """Sweep for published posts and add their first comments.
 
     Non-blocking by default: a row whose post has not published yet is left
@@ -719,7 +719,8 @@ def comment_pass(state, key=None, session=None, poster=None, ledger=None,
         # The post is LIVE from here on. Nothing below may re-publish.
         if poster is None:
             from .comment_poster import LinkedInCommentPoster
-            poster = LinkedInCommentPoster(profile_name=profile_name)
+            poster = LinkedInCommentPoster(profile_name=profile_name,
+                                            allow_production=allow_production)
             poster.setup_driver()
             if not poster.login():
                 out.update(status=COMMENT_FAILED, note="could not log in")

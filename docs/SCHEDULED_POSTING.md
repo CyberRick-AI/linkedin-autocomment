@@ -37,8 +37,16 @@ them.
 
 ```
 uv run python tools/run_scheduled_posts.py comment \
-    --profile dev --expect-identity your-profile-slug
+    --profile dev --expect-identity your-profile-slug --allow-production
 ```
+
+`--allow-production` is required in production: this pass drives a real
+browser, and the production identity guard (docs/ARCHITECTURE.md §9) refuses
+any browser-driving run whose profile resolves to a declared production
+identity_slug — which a production profile's `identity_slug` always is, per
+the identity-check bullet below. Omit the CLI flag and set
+`LINKEDIN_ALLOW_PRODUCTION=1` in the environment instead if the Task
+Scheduler action cannot carry an extra argument.
 
 **Status** — what the pipeline currently thinks, without doing anything.
 
@@ -161,6 +169,13 @@ Schedule button and the post drain. Only a human re-queue can double-post.
   refused; so is anything that is not a profile page at all, such as a login
   redirect or a checkpoint. **An empty `identity_slug` disables the guard
   entirely** — always set it in production.
+* **A separate, unconditional guard also requires `identity_slug`.** The
+  production identity guard (docs/ARCHITECTURE.md §9) refuses ANY
+  browser-driving run — this one included — whose profile has no declared
+  `identity_slug` at all, and refuses a declared PRODUCTION `identity_slug`
+  unless `--allow-production` (or `LINKEDIN_ALLOW_PRODUCTION=1`) is passed.
+  It runs before `--expect-identity` is ever checked, since it runs before any
+  browser or login exists.
 * **Validation runs over every row before any row is acted on**, so a bad row
   never leaves a half-uploaded image behind.
 * **Nothing self-likes.** The comment path never likes our own post.

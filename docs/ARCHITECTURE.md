@@ -632,9 +632,31 @@ silent pass and never as a failure. The gate flags are `requires_menu_open`,
   `/in/<slug>` segment of the resolved profile URL, **exactly** — not a
   substring, and a login or checkpoint redirect is a refusal, not a pass. A
   mismatch aborts the sweep. The expected slug comes only from profile config
-  (`identity_slug`); **an empty `identity_slug` disables the guard**, so it must
-  be set for any profile that posts. X has its own fail-closed guard against the
+  (`identity_slug`); **an empty `identity_slug` disables THIS guard**, so it must
+  be set for any profile that posts. (The production access guard below reads
+  the same field but has the opposite failure direction: for IT, an empty
+  `identity_slug` is a refusal, not a no-op — so as of that guard,
+  `identity_slug` must be set for every profile that drives a browser at all,
+  not only ones that post.) X has its own fail-closed guard against the
   Buffer channel handle. See `docs/SCHEDULED_POSTING.md`.
+- **Production access guard (`check_production_guard`).** A different risk from
+  the one above: `verify_identity` guards against being the *wrong* account,
+  live, mid-run — this guards against being the *real* one at all, before any
+  browser exists. A profile *name* does not say which account it drives
+  (`jeff` and `prod` can both be production; an unregistered profile resolves
+  to no identity at all), so production is **declared**, in
+  `PRODUCTION_IDENTITY_SLUGS` (an environment variable, not committed config —
+  a LinkedIn vanity slug identifies a real person, §10), never inferred from a
+  profile's name. `profile_manager.create_driver` — the one function every
+  browser-driving entry point in the project funnels through — refuses
+  (`ProductionAccessRefused`, exit code `EXIT_PRODUCTION_REFUSED`) if the
+  resolved profile's declared `scheduled_posting.identity_slug` is either a
+  listed production identity, or empty (unresolvable is not the same as known
+  dev — it is refused, not assumed safe). `--allow-production` (or
+  `LINKEDIN_ALLOW_PRODUCTION=1`) overrides the production case. The dashboard
+  and the scheduler always pass it — both route every action through the same
+  job bodies in `dashboard.py`, and that is production doing its job — so only
+  an ad-hoc CLI/module run is ever refused.
 - **Field naming.** `comment_fields.normalize_comment_fields` maps both historical
   conventions (`post_url`/`url`, `post_author`/`author`) to one canonical shape.
   Anything consuming a comment dict calls it.

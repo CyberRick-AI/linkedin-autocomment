@@ -333,6 +333,28 @@ Omitted keys keep the human-like defaults in `default_profile_config.json`.
 | `LINKEDIN_PASSWORD` | No | Auto-migrates to a `default` profile on first run |
 | `LINKEDIN_ALT_USERNAME` | No | Fallback username for auto-migration |
 | `LINKEDIN_ALT_PASSWORD` | No | Fallback password for auto-migration |
+| `PRODUCTION_IDENTITY_SLUGS` | No | Comma-separated `/in/<slug>` value(s) that are the real, production LinkedIn account(s) — see [Production identity guard](#production-identity-guard) |
+| `LINKEDIN_ALLOW_PRODUCTION` | No | Set to `1` as the environment equivalent of `--allow-production` |
+
+## Production identity guard
+
+A profile *name* does not say which LinkedIn account it drives — `jeff` and
+`prod` can both resolve to the real account, and an unregistered profile
+resolves to no identity at all. So every browser-driving CLI/module run
+(`post_finder`, `comment_poster`, `auto_connector`, `selector_health`,
+`poster`, `profile_manager test`, and the `tools/` scripts) refuses to
+proceed if the resolved profile's declared identity
+(`scheduled_posting.identity_slug` in its `profile_config.json`) is either:
+
+- **a declared production identity** (listed in `PRODUCTION_IDENTITY_SLUGS`), or
+- **unresolvable** (no `identity_slug` set at all) — unknown is not the same
+  as a known dev identity, so it is refused rather than assumed safe.
+
+Pass `--allow-production` (or set `LINKEDIN_ALLOW_PRODUCTION=1`) to proceed
+anyway. The dashboard and the scheduler pass this automatically — that is
+production doing its job — so only an ad-hoc CLI/module run is affected. The
+refusal happens before any browser is created and exits with a distinct code
+(`3`, `profile_manager.EXIT_PRODUCTION_REFUSED`).
 
 ## Login & Sessions
 

@@ -1147,9 +1147,10 @@ class LinkedInScraper:
 class LinkedInAIPostFinder:
     """Main class for finding AI-related posts on LinkedIn"""
     
-    def __init__(self, debug=False, profile_name=None):
+    def __init__(self, debug=False, profile_name=None, allow_production=False):
         self.profile_name = profile_name
         self.profile = None  # Set during setup_driver
+        self.allow_production = allow_production
 
         self.debug = debug
 
@@ -1207,8 +1208,9 @@ class LinkedInAIPostFinder:
         """Initialize Chrome driver with persistent session via profile manager"""
         self.logger.info("Setting up browser with persistent session...")
         
-        self.driver, self.profile = pm.create_driver(self.profile_name)
-        
+        self.driver, self.profile = pm.create_driver(
+            self.profile_name, allow_production=self.allow_production)
+
         self.scraper = LinkedInScraper(self.driver, self.logger)
         
         self.logger.info("Browser ready")
@@ -1616,6 +1618,9 @@ class LinkedInAIPostFinder:
         except pm.LoginRequiredError:
             # Distinct from generic errors so the caller can exit with code 2.
             raise
+        except pm.ProductionAccessRefused:
+            # Distinct from generic errors so the caller can exit with code 3.
+            raise
         except Exception as e:
             self.logger.error(f"Error: {e}")
             if self.debug:
@@ -1648,11 +1653,14 @@ def main():
     parser.add_argument('--min-quality', type=int, default=None, help='Minimum quality posts to find (default: profile config)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name (uses default if omitted)')
+    parser.add_argument('--allow-production', action='store_true',
+                         help='Allow running against a declared PRODUCTION identity')
 
     args = parser.parse_args()
 
     try:
-        finder = LinkedInAIPostFinder(debug=args.debug, profile_name=args.profile)
+        finder = LinkedInAIPostFinder(debug=args.debug, profile_name=args.profile,
+                                       allow_production=args.allow_production)
         # Explicit CLI args win; otherwise use the profile config, then hard defaults.
         max_posts = args.max_posts if args.max_posts is not None else (finder.cfg_max_posts or 50)
         min_quality = args.min_quality if args.min_quality is not None else (finder.cfg_min_quality or 10)
@@ -1668,6 +1676,10 @@ def main():
     except pm.LoginRequiredError as e:
         print(f"\n❌ {e}")
         sys.exit(pm.EXIT_LOGIN_REQUIRED)
+
+    except pm.ProductionAccessRefused as e:
+        print(f"\n❌ {e}")
+        sys.exit(pm.EXIT_PRODUCTION_REFUSED)
 
     except ValueError as e:
         print(f"\n❌ Configuration Error: {e}")

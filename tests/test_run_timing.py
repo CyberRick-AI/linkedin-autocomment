@@ -79,7 +79,7 @@ def _comments_file(tmp_path, urls):
 
 def _run(env, monkeypatch, page, urls):
     monkeypatch.setattr(pm, "create_driver",
-                        lambda name=None, headless=False: (page, {}))
+                        lambda name=None, headless=False, allow_production=False: (page, {}))
     poster = cpm.LinkedInCommentPoster(profile_name="t")
     # A poll that must exhaust (the missing Like) keeps a real deadline.
     poster.LIKE_WAIT_SECONDS = 0.2
@@ -161,7 +161,7 @@ def test_the_run_summary_accounts_for_the_wall_clock(env, monkeypatch):
 def test_a_run_that_cannot_log_in_still_writes_its_summary(env, monkeypatch):
     monkeypatch.setattr(pm, "login", lambda d, p: False)
     monkeypatch.setattr(pm, "create_driver",
-                        lambda name=None, headless=False: (FakePostPage(), {}))
+                        lambda name=None, headless=False, allow_production=False: (FakePostPage(), {}))
     poster = cpm.LinkedInCommentPoster(profile_name="t")
     with pytest.raises(pm.LoginRequiredError):
         poster.run(_comments_file(env, URLS[:1]), post_count=1)

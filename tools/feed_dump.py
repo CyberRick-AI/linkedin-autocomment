@@ -16,9 +16,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", default=None)
     parser.add_argument("--scroll", type=int, default=3, help="Number of scrolls")
+    parser.add_argument("--allow-production", action="store_true",
+                         help="Allow running against a declared PRODUCTION identity")
     args = parser.parse_args()
 
-    driver, profile = create_driver(args.profile)
+    driver, profile = create_driver(args.profile, allow_production=args.allow_production)
 
     try:
         print("Navigating to LinkedIn feed...")

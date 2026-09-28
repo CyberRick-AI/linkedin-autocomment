@@ -123,7 +123,8 @@ def test_check_login_logged_in(monkeypatch, capsys):
     driver = _FakeDriver()
     monkeypatch.setattr(login_check.time, "sleep", lambda *a, **k: None)
     monkeypatch.setattr(pm, "auto_migrate_from_env", lambda: None)
-    monkeypatch.setattr(pm, "create_driver", lambda profile=None: (driver, {}))
+    monkeypatch.setattr(pm, "create_driver",
+                        lambda profile=None, headless=False, allow_production=False: (driver, {}))
     monkeypatch.setattr(pm, "is_logged_in_on_page", lambda d: True)
 
     code = login_check.check_login("demo", wait_for_manual=False)
@@ -135,7 +136,8 @@ def test_check_login_not_logged_in_no_wait(monkeypatch):
     driver = _FakeDriver()
     monkeypatch.setattr(login_check.time, "sleep", lambda *a, **k: None)
     monkeypatch.setattr(pm, "auto_migrate_from_env", lambda: None)
-    monkeypatch.setattr(pm, "create_driver", lambda profile=None: (driver, {}))
+    monkeypatch.setattr(pm, "create_driver",
+                        lambda profile=None, headless=False, allow_production=False: (driver, {}))
     monkeypatch.setattr(pm, "is_logged_in_on_page", lambda d: False)
 
     code = login_check.check_login("demo", wait_for_manual=False)
@@ -144,7 +146,7 @@ def test_check_login_not_logged_in_no_wait(monkeypatch):
 
 
 def test_check_login_unknown_profile(monkeypatch):
-    def raise_value(profile=None):
+    def raise_value(profile=None, headless=False, allow_production=False):
         raise ValueError("Profile 'ghost' not found")
 
     monkeypatch.setattr(pm, "auto_migrate_from_env", lambda: None)
@@ -157,7 +159,7 @@ def test_check_login_unknown_profile(monkeypatch):
 def test_main_no_wait_passes_through(monkeypatch):
     captured = {}
 
-    def fake_check(profile_name=None, wait_for_manual=True):
+    def fake_check(profile_name=None, wait_for_manual=True, allow_production=False):
         captured["profile"] = profile_name
         captured["wait"] = wait_for_manual
         return pm.EXIT_OK
