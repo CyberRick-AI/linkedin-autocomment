@@ -684,3 +684,168 @@ silent pass and never as a failure. The gate flags are `requires_menu_open`,
   because they carry account and member content. The `*_submitdom.json`
   capture is PII-scrubbed at write (`failure_capture.scrub_pii`); the `.png` /
   `.html` page captures are raw and must never leave `data/`.
+
+---
+
+## 10. X / Buffer scheduled posting
+
+X is a second platform bolted onto the LinkedIn-shaped pipeline without
+reshaping it: one store per platform (§1.10), one policy module for
+per-platform text rules, and one scheduling chokepoint both platforms share.
+The write path never opens a browser at all; the read path (`x_finder.py`) is
+scrape-only and does not post.
+
+### 10.1 The read path — a pure function from HTML to posts
+
+`linkedin_automation/x_finder.py`. Structurally the opposite of
+`post_finder.py`: LinkedIn's scraper must **interact** with the page (open the
+"…" menu, click Copy link, read the clipboard) to learn a post's URL.
+`x_finder.py:158` (`canonical_permalink`) never has to — every X card's
+permalink is a plain `<a href>` — so the whole parse is a pure function,
+`parse_timeline(html) -> [XPost]` (`x_finder.py:292`), tested offline against
+saved DOM with no browser and no session. `XTimelineFinder` (`x_finder.py:421`)
+is the thin live half: navigate, scroll, hand HTML to the pure parser. Scrolling
+is not optional — X virtualizes the timeline, so a harvester that scrolls first
+and reads once misses everything that scrolled past; `collect()`
+(`x_finder.py:450`) reads after every scroll and accumulates by permalink.
+
+Cards nest: a quote-tweet carries two `User-Name` blocks and two avatars, and
+every extractor (`_author_name`, `_posted_at`, `canonical_permalink`) takes the
+**first** match inside the card, not the only one, for exactly that reason.
+
+**What is confirmed against saved DOM vs. inferred**, per the module's own
+docstring (`x_finder.py:14-52`): the card/action-row/permalink selectors and
+engagement-count parsing are confirmed. `_author_name`'s `@`-split
+(`x_finder.py:235`) and `parse_search_results`'s aliasing to `parse_timeline`
+(`x_finder.py:314`) are marked `PROVISIONAL` — the scrubbed captures prove
+structure, not real text content, and no search-page DOM was ever saved to test
+against. A wrong display name costs a label, never a mis-addressed post — the
+post's identity (`get_identifier`, `x_finder.py:121`) is always the permalink,
+confirmed separately.
+
+**Selector health does not reach this page yet.** `x_selectors.py` registers
+`x_timeline`/`x_status`/`x_search` entries in `SELECTOR_REGISTRY` (e.g.
+`x_selectors.py:473`), but `selector_health.py`'s `--page` CLI flag only
+accepts `feed`/`search`/`post`/`composer` (`selector_health.py:1304-1305`) —
+LinkedIn's four pages. There is no live or fixture path to check an X selector
+through the shipped tool today; logged in `.dev/BACKLOG.md`.
+
+### 10.2 The write path — Buffer only, never a browser
+
+X posts through Buffer's API; nothing on this path constructs a `webdriver`.
+`csv_pipeline.schedule_pass()` (`csv_pipeline.py:776`) is the one chokepoint
+every platform's Buffer write passes through, reached by the dashboard's manual
+"Schedule" route, the CLI (`tools/run_scheduled_posts.py`), and (for
+LinkedIn only today) the automatic drain. `buffer_client.create_post()`
+(`buffer_client.py:431`) is the sole GraphQL mutation that actually creates a
+post; `schedule_pass` is its only live caller.
+
+**Where the link goes is a platform decision** (`compose_for_platform`,
+`csv_pipeline.py:205`), not a CSV column: LinkedIn's `first_comment_link` is
+posted as a first comment by the browser pass (Buffer's `firstComment` field is
+paywalled and rejects the whole post on the free plan); X has no comment pass
+at all, so the link is appended to the tweet body instead.
+
+> **Measured, 2026-09-19 (`.dev/DECISIONS.md`).** X's `metadata.twitter.thread`
+> field — a free threaded self-reply — is not paywalled the way LinkedIn's
+> `firstComment` is, but a live `--create` run through the Buffer spike showed
+> it **drops the base post's image**. Trading the image for a threaded reply
+> was the wrong trade for this project's posts, which is why X uses
+> link-in-body rather than a self-reply thread. `--thread-text` stays in
+> `tools/buffer_spike.py` as the evidence for that decision, not as a path
+> production takes.
+
+**Validation is platform-aware.** `validate_row()` (`csv_pipeline.py:227`)
+enforces X's hard character limit only when `platform == X_PLATFORM`, via
+`platform_policy.policy_for(X).length.hard_max` and `x_counted_length()`
+(`csv_pipeline.py:198`, which counts every URL as X's fixed t.co cost, not its
+literal length). `PipelineState` (`csv_pipeline.py:280`) takes a `platform=`
+argument and keeps LinkedIn's on-disk state file path completely unchanged
+(`platform == SCHEDULED_DEFAULT_PLATFORM` is the one branch that returns the
+legacy path verbatim) while giving every other platform its own file — the
+same "isolation is the path" pattern the post store uses (§1.10).
+
+**`comment_pass()` refuses outright for any platform but LinkedIn** — X has no
+comment pass, because the link already rode in the body; asking it to comment
+would imply a browser action that makes no sense for this platform. The CLI
+names this explicitly rather than trying and failing.
+
+### 10.3 Two identity guards, answering two different questions
+
+- **`verify_identity` / `verify_channel_identity` / `verify_buffer_identity`**
+  (`csv_pipeline.py:468,418,448`) — "is this the right account". For X this
+  compares Buffer's own channel handle (`channel_handle`, `csv_pipeline.py:392`,
+  reading `name` then falling back to `externalLink`'s last segment) against
+  the configured `identity_slug`, exact after case-folding and a stripped
+  leading `@`. This is the Buffer-channel analogue of LinkedIn's browser
+  profile-URL check (§9) — same shape, different surface, because X has no
+  browser session to read a URL from.
+- **`profile_manager.check_declared_production`** (§9) — "was this run
+  authorized to touch a declared-production identity at all". A different
+  axis entirely: a *correctly configured*, genuinely-production X channel
+  passes `verify_identity` every time. `check_declared_production` is what
+  refuses it without `--allow-production`, called inside `schedule_pass`
+  before `verify_identity`, so a refused identity never reaches Buffer even
+  for the identity check's own request.
+
+Both checks run; neither substitutes for the other.
+
+### 10.4 Config resolution — LinkedIn is flat, every other platform is an overlay
+
+`profile_manager.resolve_scheduled(profile_name, platform)`
+(`profile_manager.py:422`) is the one place `(profile, platform)` becomes
+usable settings (`api_key`, `channel_id`, `identity_slug`, `drain`).
+**LinkedIn resolves exactly as it always has** — the flat `scheduled_posting.*`
+fields, key from the bare `BUFFER_API_KEY`, missing key tolerated (`api_key`
+comes back `None` rather than raising, since resolving a channel id must not
+fail on an unrelated variable). **Every other platform requires its own
+`scheduled_posting.platforms.<platform>` overlay** naming its own
+`buffer_api_key_env`, and raises `ScheduledConfigError` if the overlay, the key
+variable name, or the variable's value is missing — there is no fallback to
+LinkedIn's flat fields. An unknown platform with no overlay is an error, not a
+silent LinkedIn default: returning LinkedIn's channel for a typo'd platform
+name would publish X content to LinkedIn, unrecoverably and silently.
+
+### 10.5 Multi-account Buffer caching
+
+`buffer_client.get_channel`/`scheduled_slots` used to cache on `channel_id`
+alone, which is a cross-account leak the moment a second Buffer key exists: the
+same channel id under a different key would silently serve the *first* key's
+channel, org id, and slot count. `_key_fingerprint(key)`
+(`buffer_client.py:309`) — a 12-hex SHA-256 prefix, never the raw key, since
+cache dicts get logged and repr'd — is folded into both cache keys so two
+accounts' reads can never cross. `clear_caches()` (`buffer_client.py:335`) is
+the reset used by tests and forced refreshes.
+
+### 10.6 Platform policy — text rules, not posting rules
+
+`platform_policy.policy_for(platform)` (`platform_policy.py:363`) is the
+generator's per-platform contract: length unit and ceiling (`LengthPolicy`),
+whether exceeding it makes a draft literally unpostable (X, 280 chars, a hard
+API limit) or merely too long to be good (LinkedIn, a quality heuristic), and
+voice. **There is no default** — an empty or unrecognized platform raises
+`UnknownPlatform` rather than falling back to LinkedIn's policy, because a
+silent LinkedIn default here would generate LinkedIn-voiced text for X and pass
+every automated gate on the way out. This is the same "refuse rather than
+default" shape `resolve_scheduled` (§10.4) and the identity guards (§10.3) all
+share.
+
+### 10.7 The post drain is LinkedIn-only today
+
+`post_drain.py` and its dashboard job body (`dashboard.py:1956`,
+`_drain_feed_job`) never reference `platform` at all (zero matches) — every
+automatic drain resolves to `platform="linkedin"` inside `schedule_pass`
+regardless of what a profile is configured for. X rows are never fed
+automatically; only the manual "Schedule" route (`dashboard.py:1724`,
+`_scheduled_schedule_job`, which threads `platform=`/`identity_slug=`
+correctly) and the CLI schedule the X write path today. Logged in
+`.dev/BACKLOG.md` as a gap for whoever makes X draining work, not a design
+decision.
+
+### 10.8 What is not covered here
+
+`docs/SCHEDULED_POSTING.md` is the operator runbook for this path and predates
+the X work — it documents the LinkedIn CSV/Buffer flow only. It has not yet
+been extended for X's CSV shape, the `--platform` flag, or the
+`--allow-production` flag on the schedule pass; treat it as LinkedIn-only until
+it is.
