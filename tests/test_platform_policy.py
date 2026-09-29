@@ -609,3 +609,85 @@ def test_x_system_voice_carries_the_rule(make_generator):
     assert "State the finding" in sv
     # And it sits early, not tacked on the end.
     assert sv.index("Never open by positioning") < len(sv) // 2
+
+
+# ─── Dispatch 19: the generator's store writes must match its own platform ────
+#
+# _trash_rejected_in_store and _mark_generated_in_store constructed PostStore()
+# with no platform=, so --platform x wrote X-voiced drafts into the LinkedIn
+# store instead of data/<profile>/x/posts_db.json. The constructor-level guard
+# above (policy_for raising for an unknown/empty platform) never caught this —
+# "x" is a perfectly valid platform, so nothing refused; the store just wrote
+# to the wrong file, silently.
+
+@pytest.fixture
+def store_env(tmp_path, monkeypatch):
+    """Redirect every path the generator's store writes touch into a temp dir."""
+    monkeypatch.setattr(pm, "DATA_ROOT", str(tmp_path / "data"))
+    comments = tmp_path / "comments"
+    comments.mkdir()
+    monkeypatch.setattr(pm, "get_comments_dir", lambda profile_name=None: str(comments))
+    monkeypatch.setattr(pm, "get_progress_file",
+                        lambda profile_name=None: str(comments / "p.json"))
+    monkeypatch.setattr(pm, "get_profile_config", lambda profile_name=None: {})
+
+
+def _li_path(profile):
+    return post_store.PostStore._default_path(profile, post_store.LINKEDIN)
+
+
+def _x_path(profile):
+    return post_store.PostStore._default_path(profile, post_store.X)
+
+
+def test_x_platform_reject_writes_only_to_the_x_store(store_env):
+    url = "https://x.com/someone/status/1"
+    post_store.PostStore("genprof", platform=pp.X).upsert_scraped(
+        {"url": url, "author_name": "a", "text": "t"}, save=True)
+
+    g = gen.AuthenticCommentGenerator("dummy.json", profile_name="genprof", platform=pp.X)
+    g.rejected_posts = [{"url": url}]
+    g._trash_rejected_in_store()
+
+    assert post_store.PostStore("genprof", platform=pp.X).get(url)["status"] == post_store.TRASH
+    assert not os.path.exists(_li_path("genprof")), (
+        "reject landed in the LinkedIn store instead of X's own file"
+    )
+
+
+def test_x_platform_mark_generated_writes_only_to_the_x_store(store_env):
+    url = "https://x.com/someone/status/2"
+    post_store.PostStore("genprof2", platform=pp.X).upsert_scraped(
+        {"url": url, "author_name": "a", "text": "t"}, save=True)
+
+    g = gen.AuthenticCommentGenerator("dummy.json", profile_name="genprof2", platform=pp.X)
+    g._mark_generated_in_store([{"post_url": url, "comment": "a reply",
+                                 "style": "s", "approach": "ap", "word_count": 2}])
+
+    x_rec = post_store.PostStore("genprof2", platform=pp.X).get(url)
+    assert x_rec["status"] == post_store.GENERATED
+    assert x_rec["comment"] == "a reply"
+    assert not os.path.exists(_li_path("genprof2")), (
+        "mark_generated landed in the LinkedIn store instead of X's own file"
+    )
+
+
+def test_linkedin_platform_store_writes_are_unchanged(store_env):
+    """Regression: explicit LinkedIn must still land at the pre-fix default path."""
+    url = "https://www.linkedin.com/feed/update/urn:li:activity:9/"
+    post_store.PostStore("genprof3").upsert_scraped(  # no platform= : the old default
+        {"url": url, "author_name": "a", "text": "t"}, save=True)
+
+    g = gen.AuthenticCommentGenerator("dummy.json", profile_name="genprof3", platform=pp.LINKEDIN)
+    g._mark_generated_in_store([{"post_url": url, "comment": "nice point",
+                                 "style": "s", "approach": "ap", "word_count": 2}])
+
+    li_store = post_store.PostStore("genprof3")  # still the old, unparameterized call
+    assert li_store.path == _li_path("genprof3")
+    rec = li_store.get(url)
+    assert rec["status"] == post_store.GENERATED
+    assert rec["comment"] == "nice point"
+    assert not os.path.exists(_x_path("genprof3")), (
+        "the LinkedIn-platform generator created an X store file that never "
+        "existed before platform was threaded through"
+    )
