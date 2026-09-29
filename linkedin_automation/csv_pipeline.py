@@ -776,7 +776,8 @@ def reconcile_published(state, channel_id, key=None, session=None, fetch=None,
 def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
                   upload=None, generate=None, profile_name=None, now=None,
                   max_new=None, slot_limit=None, platform=None,
-                  identity_slug=None, fetch_channel=None):
+                  identity_slug=None, fetch_channel=None,
+                  allow_production=False):
     """Validate and create every post that does not already have one.
 
     ``max_new`` is the number of scheduled-post slots Buffer actually has free.
@@ -804,6 +805,16 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
     # LinkedIn is deliberately not gated here - see .dev/BACKLOG.md. Its
     # schedule path is byte-identical, this branch simply does not run.
     if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        # PRODUCTION GATE, before verify_identity - which itself is a live
+        # Buffer call. verify_identity answers "is this the right channel";
+        # this answers "did the caller declare authorization to touch a
+        # declared-production identity" (docs/ARCHITECTURE.md §9). Both must
+        # run; this one runs first so a declared-production identity never
+        # reaches Buffer at all, not even for the identity check itself.
+        pm.check_declared_production(
+            identity_slug, "schedule a Buffer post on %s" % platform,
+            allow_production=allow_production)
+
         ok, detail = verify_identity(platform, identity_slug,
                                      channel_id=channel_id, key=key,
                                      session=session,

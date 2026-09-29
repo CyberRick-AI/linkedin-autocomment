@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from linkedin_automation import csv_pipeline as cp  # noqa: E402
+from linkedin_automation import profile_manager as pm  # noqa: E402
 
 REAL = "https://www.linkedin.com/in/example-person-one/?isSelfProfile=true"
 
@@ -330,6 +331,7 @@ def x_run(tmp_path, monkeypatch):
         "https://example.com/x\n", encoding="utf-8")
 
     created = []
+    channel_fetches = []
 
     def fake_create(channel_id, body, image_url, when, key=None, session=None):
         created.append({"channel_id": channel_id, "body": body,
@@ -338,25 +340,32 @@ def x_run(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli.cp.bc, "create_post", fake_create)
 
-    def run(identity_slug, channel_name="AI_Fun_times", platform="x"):
+    def run(identity_slug, channel_name="AI_Fun_times", platform="x",
+            allow_production=False):
         monkeypatch.setattr(cli.pm, "resolve_scheduled", lambda p, plat: {
             "platform": plat, "api_key": "x-key", "channel_id": "chan_x",
             "api_key_env": "BUFFER_API_KEY_X", "identity_slug": identity_slug,
             "drain": None})
-        monkeypatch.setattr(cli.cp.bc, "get_channel",
-                            lambda cid, key=None, session=None: {
-                                "id": cid, "name": channel_name,
-                                "externalLink": "https://x.com/%s" % channel_name})
+
+        def fake_get_channel(cid, key=None, session=None):
+            channel_fetches.append(cid)
+            return {"id": cid, "name": channel_name,
+                    "externalLink": "https://x.com/%s" % channel_name}
+
+        monkeypatch.setattr(cli.cp.bc, "get_channel", fake_get_channel)
         monkeypatch.setattr(cli.cp.pm, "get_data_dir",
                             lambda profile_name=None, subdir=None: str(tmp_path))
         argv = ["run_scheduled_posts.py", "schedule", "--profile", "p",
                 "--csv", str(csv_path)]
         if platform:
             argv += ["--platform", platform]
+        if allow_production:
+            argv += ["--allow-production"]
         monkeypatch.setattr("sys.argv", argv)
         return cli.main()
 
     run.created = created
+    run.channel_fetches = channel_fetches
     return run
 
 
@@ -374,8 +383,15 @@ def test_a_wrong_identity_aborts_the_x_run_before_anything_is_created(x_run,
 
 
 def test_an_empty_identity_aborts_the_x_run(x_run, capsys):
+    """Dispatch 20: check_declared_production now runs BEFORE verify_identity,
+    so an empty identity is caught by the production gate first - a different
+    refusal (EXIT_PRODUCTION_REFUSED) than verify_identity's own empty-slug
+    check used to surface (IdentityRefused, rc 2). Both still refuse; only the
+    exit code and exception type changed, because "resolves to nothing" is
+    now unconditionally a production-gate refusal, not just an identity
+    mismatch (see test_an_unresolvable_x_identity_refuses_even_with_the_flag)."""
     rc = x_run(identity_slug="")
-    assert rc == 2
+    assert rc == pm.EXIT_PRODUCTION_REFUSED
     assert x_run.created == []
     assert "REFUSING" in capsys.readouterr().out
 
@@ -410,3 +426,176 @@ def test_the_linkedin_schedule_path_is_not_gated_at_schedule_time(x_run):
     assert len(x_run.created) == 1, "LinkedIn should have scheduled"
     # LinkedIn's body must NOT carry the link - its first comment does.
     assert "https://example.com/x" not in x_run.created[0]["body"]
+
+
+# ─── Dispatch 20: the declared-production gate on X's write path ─────────────
+#
+# verify_identity (above) answers "is this the right channel" - a wrong-account
+# detector a correctly-configured PRODUCTION channel passes every time. It has
+# no concept of "was this run explicitly authorized to touch a declared-
+# production identity." pm.check_declared_production is that second,
+# independent question - the X-write-path sibling of main's
+# check_production_guard (docs/ARCHITECTURE.md §9) - and it runs FIRST, inside
+# schedule_pass, before verify_identity's own Buffer call.
+
+def test_a_declared_production_x_identity_refuses_without_the_flag(
+        x_run, monkeypatch, capsys):
+    """The gate. Assert on the Buffer call, not on "nothing posted"."""
+    monkeypatch.setenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, "AI_Fun_times")
+    rc = x_run(identity_slug="AI_Fun_times")
+    out = capsys.readouterr().out
+
+    assert rc == pm.EXIT_PRODUCTION_REFUSED
+    assert x_run.created == [], "it created a post despite the production refusal"
+    assert x_run.channel_fetches == [], (
+        "it called Buffer's get_channel - the identity check's OWN request - "
+        "despite the production refusal; the gate must run before ANY "
+        "Buffer call, not just before create_post")
+    assert "REFUSING" in out
+    assert "AI_Fun_times" in out
+    assert "--allow-production" in out
+
+
+def test_the_same_declared_production_identity_proceeds_with_the_flag(
+        x_run, monkeypatch):
+    monkeypatch.setenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, "AI_Fun_times")
+    rc = x_run(identity_slug="AI_Fun_times", allow_production=True)
+    assert rc == 0
+    assert len(x_run.created) == 1
+    assert x_run.created[0]["channel_id"] == "chan_x"
+
+
+def test_a_non_production_x_identity_proceeds_without_the_flag(x_run, monkeypatch):
+    """A slug that is NOT on the declared-production list needs no flag at
+    all - only a DECLARED production identity requires authorization."""
+    monkeypatch.setenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, "some-other-account")
+    rc = x_run(identity_slug="AI_Fun_times")
+    assert rc == 0
+    assert len(x_run.created) == 1
+
+
+def test_an_unresolvable_x_identity_refuses_even_with_the_flag(x_run, capsys):
+    """Unknown is not "not production" - unlike a genuinely non-production
+    identity, an identity that resolves to NOTHING refuses unconditionally,
+    flag or no flag (mirrors check_production_guard's own rule for
+    LinkedIn - docs/ARCHITECTURE.md §9)."""
+    rc = x_run(identity_slug="", allow_production=True)
+    out = capsys.readouterr().out
+    assert rc == pm.EXIT_PRODUCTION_REFUSED
+    assert x_run.created == []
+    assert x_run.channel_fetches == []
+    assert "REFUSING" in out
+
+
+def test_the_dashboard_schedule_route_passes_allow_production(monkeypatch):
+    """The manual "Schedule" button is production doing its job - it must
+    authorize a declared-production identity the same way the scheduler's
+    drain and every other dashboard job body already does."""
+    from linkedin_automation import dashboard
+
+    seen = {}
+
+    def fake_schedule_pass(rows, channel_id, state, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(dashboard.csv_pipeline, "schedule_pass",
+                        fake_schedule_pass)
+    monkeypatch.setattr(dashboard.pm, "resolve_scheduled",
+                        lambda p, plat: {"api_key": "k",
+                                         "identity_slug": "someone"})
+    monkeypatch.setattr(dashboard.csv_pipeline, "pending_rows",
+                        lambda state: [{"row": {}}])
+    monkeypatch.setattr(dashboard, "log_job", lambda *a, **k: None)
+
+    dashboard._scheduled_schedule_job("job1", "jeff", "chan_x", platform="x")
+    assert seen.get("allow_production") is True
+
+
+def test_a_declared_production_x_identity_refuses_through_the_dashboard_route(
+        monkeypatch):
+    """The dashboard passes allow_production=True unconditionally, but that
+    must not blanket-disable the gate for an identity that is NOT the one the
+    dashboard's own config resolved - schedule_pass still refuses correctly
+    when the resolved identity itself is unresolvable.
+
+    Asserts on check_declared_production's OWN wording ("no declared
+    identity"), not merely "REFUSED" - the pre-existing IdentityRefused path
+    (verify_identity's "no expected identity configured") would produce a
+    superficially identical-looking refusal even with the new gate absent,
+    which would make this test pass for the wrong reason.
+
+    Also asserts scheduled_slots was never called - the dashboard route reads
+    Buffer's slot count BEFORE calling schedule_pass, so without a guard here
+    too an unresolvable identity would still burn that call before the
+    refusal fires (found in code review)."""
+    from linkedin_automation import dashboard
+
+    monkeypatch.setattr(dashboard.pm, "resolve_scheduled",
+                        lambda p, plat: {"api_key": "k", "identity_slug": ""})
+    monkeypatch.setattr(dashboard.csv_pipeline, "pending_rows",
+                        lambda state: [{"row": {}}])
+    slot_calls = []
+    monkeypatch.setattr(dashboard.buffer_client, "scheduled_slots",
+                        lambda *a, **k: slot_calls.append(a) or {})
+    logs = []
+    monkeypatch.setattr(dashboard, "log_job",
+                        lambda job_id, msg: logs.append(msg))
+
+    result = dashboard._scheduled_schedule_job("job1", "jeff", "chan_x",
+                                               platform="x")
+    assert result["scheduled"] == 0
+    assert any("no declared identity" in m for m in logs), logs
+    assert slot_calls == [], "Buffer's slot count was read before the gate fired"
+
+
+def test_x_handle_with_a_leading_at_sign_matches_a_bare_production_declaration(
+        x_run, monkeypatch, capsys):
+    """Found in code review: verify_channel_identity (the Buffer-side half of
+    the guard) strips a leading '@' before comparing; check_declared_production
+    did not, so PRODUCTION_IDENTITY_SLUGS=AI_Fun_times silently never matched
+    an identity_slug configured as "@AI_Fun_times" - a declared-production
+    account would schedule unrefused. Both directions checked: '@' on the
+    declared list, and '@' on the configured identity."""
+    monkeypatch.setenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, "@AI_Fun_times")
+    rc = x_run(identity_slug="AI_Fun_times")
+    assert rc == pm.EXIT_PRODUCTION_REFUSED
+    assert x_run.created == []
+    assert "REFUSING" in capsys.readouterr().out
+
+
+def test_a_production_declaration_matches_an_at_prefixed_identity_slug(
+        x_run, monkeypatch, capsys):
+    monkeypatch.setenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, "AI_Fun_times")
+    rc = x_run(identity_slug="@AI_Fun_times")
+    assert rc == pm.EXIT_PRODUCTION_REFUSED
+    assert x_run.created == []
+    assert "REFUSING" in capsys.readouterr().out
+
+
+# ─── Regression: check_production_guard / create_driver are untouched ────────
+
+def test_check_production_guard_still_refuses_exactly_as_before(
+        monkeypatch):
+    """The X gate is a NEW sibling function; check_production_guard itself
+    must fire with the same message shape it always has, for the same
+    reasons test_production_guard.py pins (--allow-production named,
+    LINKEDIN_ALLOW_PRODUCTION named, the identity named)."""
+    monkeypatch.setenv(pm.PRODUCTION_IDENTITY_SLUGS_ENV, "jeffwurfel")
+    monkeypatch.setattr(pm, "get_identity_slug", lambda profile_name: "jeffwurfel")
+    with pytest.raises(pm.ProductionAccessRefused) as exc:
+        pm.check_production_guard("jeff")
+    detail = str(exc.value)
+    assert "jeffwurfel" in detail
+    assert "--allow-production" in detail
+    assert pm.ALLOW_PRODUCTION_ENV in detail
+
+
+def test_create_driver_never_calls_the_x_gate():
+    """The new function must not be wired into the browser chokepoint at
+    all - X's write path has no browser, and create_driver's guard must stay
+    exactly as it was before Dispatch 20."""
+    import inspect
+    src = inspect.getsource(pm.create_driver)
+    assert "check_declared_production" not in src
+    assert "check_production_guard" in src

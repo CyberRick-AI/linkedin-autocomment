@@ -79,8 +79,8 @@ def main():
                     help="comment pass: block until a due post publishes, "
                          "instead of leaving it for the next sweep")
     ap.add_argument("--allow-production", action="store_true",
-                    help="allow the comment pass to run against a declared "
-                         "PRODUCTION identity")
+                    help="allow the schedule or comment pass to run against "
+                         "a declared PRODUCTION identity")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -128,10 +128,14 @@ def main():
                                        profile_name=args.profile,
                                        key=resolved["api_key"],
                                        platform=args.platform,
-                                       identity_slug=expect_identity)
+                                       identity_slug=expect_identity,
+                                       allow_production=args.allow_production)
         except cp.IdentityRefused as exc:
             print("REFUSING: %s" % exc)
             return 2
+        except pm.ProductionAccessRefused as exc:
+            print("REFUSING: %s" % exc)
+            return pm.EXIT_PRODUCTION_REFUSED
         print(cp.summarize(results, []))
         failed = [r for r in results if r.get("status") == cp.FAILED]
         return 1 if failed else 0

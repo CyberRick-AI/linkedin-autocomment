@@ -549,12 +549,20 @@ ALLOW_PRODUCTION_ENV = "LINKEDIN_ALLOW_PRODUCTION"
 
 
 def get_production_identity_slugs() -> set:
-    """The identity_slugs declared as the real, production LinkedIn account(s).
+    """The identity_slugs declared as the real, production account(s) - any
+    platform, since this list is shared across all of them (see
+    docs/ARCHITECTURE.md §9 and .dev/DECISIONS.md's 2026-09-29 entry).
+
+    A leading ``@`` is stripped so ``@AI_Fun_times`` and ``AI_Fun_times``
+    declare the same identity - matching csv_pipeline.verify_channel_identity,
+    which does the same normalization on the OTHER side of this exact
+    comparison (check_declared_production). LinkedIn slugs never carry a
+    leading ``@``, so this is a no-op for every existing declaration.
 
     Never inferred from a profile name - see ProductionAccessRefused.
     """
     raw = os.environ.get(PRODUCTION_IDENTITY_SLUGS_ENV, "")
-    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+    return {s.strip().lstrip("@").lower() for s in raw.split(",") if s.strip()}
 
 
 def get_identity_slug(profile_name: str) -> str:
@@ -603,6 +611,57 @@ def check_production_guard(profile_name: str, allow_production: bool = False) ->
             f"Refusing to drive a browser for profile '{profile_name}': its "
             f"identity_slug '{identity_slug}' is a declared PRODUCTION "
             f"identity. Pass --allow-production (or set "
+            f"{ALLOW_PRODUCTION_ENV}=1) to proceed."
+        )
+
+
+def check_declared_production(identity_slug: str, context: str,
+                               allow_production: bool = False) -> None:
+    """The declared-production model, for a write path that never touches
+    ``create_driver`` - e.g. X's Buffer posting, which has no browser and so
+    cannot be gated by ``check_production_guard``.
+
+    Same two rules as ``check_production_guard``, same env vars
+    (``PRODUCTION_IDENTITY_SLUGS``, ``LINKEDIN_ALLOW_PRODUCTION``), same
+    exception and exit code - but takes an already-resolved ``identity_slug``
+    directly rather than a profile name, since a non-LinkedIn platform's
+    identity resolves from its own config path (e.g.
+    ``scheduled_posting.platforms.x.identity_slug``), not the flat
+    ``get_identity_slug`` LinkedIn profiles use. ``context`` names the action
+    being refused (e.g. "schedule a Buffer post on x") for the message.
+
+    Deliberately NOT a code path inside ``check_production_guard`` or
+    ``create_driver`` - this guards a write that has no browser at all, so
+    routing it through the browser chokepoint is not an option, and this
+    function must never be called from ``create_driver`` (LinkedIn's guard
+    stays exactly as it is).
+
+    Raises ProductionAccessRefused. An identity that resolves to NOTHING is a
+    refusal, not a pass - unknown is not the same as known-non-production, and
+    that holds with or without ``allow_production``.
+    """
+    allow_production = allow_production or _allow_production_from_env()
+
+    # Normalized the same way csv_pipeline.verify_channel_identity normalizes
+    # the identity it compares against a live Buffer channel - "@AI_Fun_times"
+    # and "AI_Fun_times" must be the SAME declared identity on both sides of
+    # this guard, or a slug written with a leading '@' here (natural for an X
+    # handle) silently never matches an entry in PRODUCTION_IDENTITY_SLUGS
+    # (also normalized, see get_production_identity_slugs), and a declared-
+    # production account schedules unrefused.
+    normalized = (identity_slug or "").strip().lstrip("@").lower()
+
+    if not normalized:
+        raise ProductionAccessRefused(
+            f"Refusing to {context}: no declared identity. An unresolved "
+            f"identity is not assumed safe - declare an identity_slug before "
+            f"running against it."
+        )
+
+    if normalized in get_production_identity_slugs() and not allow_production:
+        raise ProductionAccessRefused(
+            f"Refusing to {context}: identity '{identity_slug}' is a "
+            f"declared PRODUCTION identity. Pass --allow-production (or set "
             f"{ALLOW_PRODUCTION_ENV}=1) to proceed."
         )
 

@@ -1742,6 +1742,23 @@ def _scheduled_schedule_job(job_id, profile_name, channel_id,
         return {"scheduled": 0, "failed": 0, "results": [],
                 "note": "nothing pending"}
 
+    # Checked here too, redundantly with the one inside schedule_pass, so an
+    # unresolvable identity (refused even with allow_production=True) never
+    # even reaches the slots read below - the gate must run before ANY Buffer
+    # call, not just before create_post (docs/ARCHITECTURE.md §9). A declared-
+    # production identity WITH allow_production=True (always true here) would
+    # proceed either way, so this only changes the unresolvable-identity case.
+    if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        try:
+            pm.check_declared_production(
+                resolved.get("identity_slug"),
+                "schedule a Buffer post on %s" % platform,
+                allow_production=True)
+        except pm.ProductionAccessRefused as exc:
+            log_job(job_id, "REFUSED: %s" % exc)
+            return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
+                    "error": str(exc)}
+
     try:
         # max_age=0: this decides what actually gets sent, so it must not act
         # on a cached count.
@@ -1763,13 +1780,21 @@ def _scheduled_schedule_job(job_id, profile_name, channel_id,
     # is covered by the same check the CLI is - no second implementation, and
     # no way for a new caller to skip it. It raises rather than returning, so a
     # refusal cannot be mistaken for "scheduled nothing".
+    #
+    # allow_production=True: this IS the dashboard, which - like the
+    # scheduler - is production doing its job (docs/ARCHITECTURE.md §9). A
+    # bare CLI/module run does not pass this, and is refused by default.
     try:
         results = csv_pipeline.schedule_pass(
             rows, channel_id, state, profile_name=profile_name,
             max_new=max_new, slot_limit=slot_limit, platform=platform,
             identity_slug=resolved.get("identity_slug"),
-            key=resolved.get("api_key"))
+            key=resolved.get("api_key"), allow_production=True)
     except csv_pipeline.IdentityRefused as exc:
+        log_job(job_id, "REFUSED: %s" % exc)
+        return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
+                "error": str(exc)}
+    except pm.ProductionAccessRefused as exc:
         log_job(job_id, "REFUSED: %s" % exc)
         return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
                 "error": str(exc)}

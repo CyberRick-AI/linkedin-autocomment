@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from linkedin_automation import csv_pipeline as cp  # noqa: E402
 from linkedin_automation import platform_policy as pp  # noqa: E402
+from linkedin_automation import profile_manager as pm  # noqa: E402
 
 NOW = cp.datetime(2036, 11, 1, 9, 0, tzinfo=cp.timezone.utc)
 
@@ -184,7 +185,13 @@ def test_the_guard_runs_once_per_call_not_once_per_row(state, monkeypatch):
 
 
 def test_an_empty_slug_refuses_the_x_run(state):
-    with pytest.raises(cp.IdentityRefused):
+    """Dispatch 20: pm.check_declared_production now runs BEFORE
+    verify_identity inside schedule_pass, and an identity that resolves to
+    NOTHING is unconditionally its refusal (ProductionAccessRefused), not
+    verify_identity's own empty-slug check (IdentityRefused) - see
+    docs/ARCHITECTURE.md §9 and tests/test_identity_guard.py's
+    test_an_unresolvable_x_identity_refuses_even_with_the_flag."""
+    with pytest.raises(pm.ProductionAccessRefused):
         cp.schedule_pass([row()], "chan_x", state, now=NOW, platform="x",
                          identity_slug="", fetch_channel=fetch_ok)
 
