@@ -921,7 +921,7 @@ Write ONLY the {r.action} text:"""
         if not (HAS_POST_STORE and self.resolved_profile and rejected):
             return
         try:
-            store = post_store.PostStore(self.resolved_profile)
+            store = post_store.PostStore(self.resolved_profile, platform=self.platform)
             moved = 0
             for post in rejected:
                 url = (post.get("url") or "").strip()
@@ -945,7 +945,7 @@ Write ONLY the {r.action} text:"""
         if not (HAS_POST_STORE and self.resolved_profile and results):
             return
         try:
-            store = post_store.PostStore(self.resolved_profile)
+            store = post_store.PostStore(self.resolved_profile, platform=self.platform)
             for r in results:
                 url = r.get("post_url") or ""
                 if not url:
