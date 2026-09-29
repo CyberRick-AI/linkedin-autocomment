@@ -15,6 +15,8 @@ Exit codes:
     0  logged in
     1  error (no/unknown profile, browser failure)
     2  not logged in (login required)
+    3  refused: profile resolves to a declared PRODUCTION identity (or none at
+       all) without --allow-production
 """
 
 import argparse
@@ -54,12 +56,13 @@ def status_report(logged_in: bool, profile_name: str):
     )
 
 
-def check_login(profile_name: str = None, wait_for_manual: bool = True) -> int:
+def check_login(profile_name: str = None, wait_for_manual: bool = True,
+                 allow_production: bool = False) -> int:
     """Open the profile's Chrome session, report status, and return an exit code."""
     driver = None
     try:
         pm.auto_migrate_from_env()
-        driver, _profile = pm.create_driver(profile_name)
+        driver, _profile = pm.create_driver(profile_name, allow_production=allow_production)
         # URL-based detection (is_logged_in_on_page) after a single navigation —
         # avoids the false "not logged in" the old element wait produced.
         driver.get("https://www.linkedin.com/feed/")
@@ -82,6 +85,9 @@ def check_login(profile_name: str = None, wait_for_manual: bool = True) -> int:
         # Raised by create_driver for missing/unknown profile.
         print(f"❌ {e}")
         return pm.EXIT_ERROR
+    except pm.ProductionAccessRefused as e:
+        print(f"❌ {e}")
+        return pm.EXIT_PRODUCTION_REFUSED
     except Exception as e:
         print(f"❌ Could not check login status: {e}")
         return pm.EXIT_ERROR
@@ -106,13 +112,18 @@ def main(argv=None) -> int:
         "--no-wait", action="store_true",
         help="Report status and exit; do not wait for manual login",
     )
+    parser.add_argument(
+        "--allow-production", action="store_true",
+        help="Allow running against a declared PRODUCTION identity",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
 
-    return check_login(args.profile, wait_for_manual=not args.no_wait)
+    return check_login(args.profile, wait_for_manual=not args.no_wait,
+                        allow_production=args.allow_production)
 
 
 if __name__ == "__main__":

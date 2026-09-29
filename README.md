@@ -60,7 +60,7 @@ uv run python -m linkedin_automation.dashboard
 The core code is a Python package (`linkedin_automation/`); standalone
 maintenance scripts live in `tools/`. Launch everything from the project root.
 For how the pieces fit together — and the rules a change must not break — read
-**[ARCHITECTURE.md](ARCHITECTURE.md)**.
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ```
 linkedin-automation/
@@ -80,6 +80,8 @@ linkedin-automation/
 │   ├── post_store.py                   # Central per-profile post lifecycle store
 │   ├── scheduler.py                    # Randomized twice-daily auto-post engine
 │   ├── failure_capture.py              # Screenshots + DOM sidecars on browser errors
+│   ├── run_log.py                      # Per-run file log + per-step timing for the poster
+│   ├── post_urn.py                     # One grammar for LinkedIn post URNs (scraper + poster)
 │   └── selector_health.py              # Detects when LinkedIn's DOM breaks selectors
 ├── tools/                              # standalone maintenance / diagnostic scripts
 │   ├── login_check.py                  # Check/establish a profile's LinkedIn session
@@ -95,8 +97,15 @@ linkedin-automation/
 ├── .env                                # Your API keys (create from .env.example)
 ├── .env.example
 ├── .gitignore
-├── ARCHITECTURE.md                      # How it fits together + the lifecycle contract
+├── docs/
+│   ├── ARCHITECTURE.md                 # Pipeline, state model, data layout, rules
+│   ├── MAINTENANCE.md                  # Selector-repair runbook + live DOM facts
+│   ├── PRINCIPLES.md                   # How work is done on this repo
+│   ├── SCHEDULED_POSTING.md            # Buffer/CSV scheduled posting
+│   └── HANDOFF.md                      # Executor pointer: branches, next action
 ├── README.md / CONTRIBUTING.md / LICENSE
+├── logs/                               # run_<profile>_<ts>.log per comment-posting run (git-ignored):
+│                                       #   STEP/POLL/COMMENT/RUN timing lines, file only
 └── data/                               # Auto-created at runtime (git-ignored)
     ├── profiles/
     │   ├── profiles.json               # Encrypted credentials
@@ -120,7 +129,7 @@ the project root, regardless of where you launch from.
 
 ### Post lifecycle (`posts_db.json`)
 
-> **See [ARCHITECTURE.md](ARCHITECTURE.md) §1** for the full contract — every
+> **See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §1** for the full contract — every
 > reader and its source, the reconciliation order, the load-bearing gotchas, and
 > the invariants. This section is the summary.
 
@@ -130,6 +139,8 @@ scattered across files:
 
 ```
 NEW ──generate──▶ GENERATED ──post──▶ COMMENTED
+ │                    │  │
+ │                    │  └──post gone from LinkedIn──▶ UNAVAILABLE (terminal)
  │                    │
  └────reject──────────┴──────▶ TRASH (ad | job_card | low_quality | no_url |
                                       evaluator_rejected | manual)
@@ -160,6 +171,14 @@ for the counts.** Files on disk are derived output, never state.
 - A post the comment **evaluator** turns down becomes `TRASH(evaluator_rejected)`.
   Without that transition it stayed `NEW` and was re-sent to the LLM — and
   re-billed — on every run. It is restorable like any trashed post.
+- A post that is **gone from LinkedIn** (deleted, taken down, made private)
+  becomes `UNAVAILABLE`. Only the poster can observe that, so it records the URL
+  under `unavailable_posts` in `posting_progress.json` and the store reconciles
+  from there. It is terminal and leaves the posting queue for good, is never set
+  over `COMMENTED`, and is not a failure: the run counts it separately. It is set
+  only on a positive signal (a redirect off the post, or an explicit removed
+  notice). A page that never loads, a login wall, or a page-load timeout stays
+  queued and is retried. See [docs/MAINTENANCE.md](docs/MAINTENANCE.md) §7.
 - **Every tab reads this store, so bin counts and tab contents always agree.**
   Review Posts lists the `NEW` bin (across every scrape, not just the latest
   file); Review Comments lists the `GENERATED` bin with each draft; the Post step
@@ -175,7 +194,9 @@ for the counts.** Files on disk are derived output, never state.
   `uv run python -m linkedin_automation.comment_generator <file> --profile <name>`.
 - `posting_progress.json` stays the authoritative record of what was actually
   posted; the store *reconciles* on every read (`reconcile`): a `NEW` post whose
-  URL was already posted becomes `COMMENTED`, a `NEW` post that already has a
+  URL was already posted becomes `COMMENTED`, a post the poster found gone becomes
+  `UNAVAILABLE` (before the draft steps, so a leftover draft cannot revive it), a
+  `NEW` post that already has a
   draft in a `comments_*`/`ready_*` file becomes `GENERATED`, a `GENERATED` post
   whose draft went missing has it recovered from a comment file (or is demoted to
   `NEW` to regenerate), and any post still `NEW` with no URL becomes
@@ -312,6 +333,28 @@ Omitted keys keep the human-like defaults in `default_profile_config.json`.
 | `LINKEDIN_PASSWORD` | No | Auto-migrates to a `default` profile on first run |
 | `LINKEDIN_ALT_USERNAME` | No | Fallback username for auto-migration |
 | `LINKEDIN_ALT_PASSWORD` | No | Fallback password for auto-migration |
+| `PRODUCTION_IDENTITY_SLUGS` | No | Comma-separated `/in/<slug>` value(s) that are the real, production LinkedIn account(s) — see [Production identity guard](#production-identity-guard) |
+| `LINKEDIN_ALLOW_PRODUCTION` | No | Set to `1` as the environment equivalent of `--allow-production` |
+
+## Production identity guard
+
+A profile *name* does not say which LinkedIn account it drives — `jeff` and
+`prod` can both resolve to the real account, and an unregistered profile
+resolves to no identity at all. So every browser-driving CLI/module run
+(`post_finder`, `comment_poster`, `auto_connector`, `selector_health`,
+`poster`, `profile_manager test`, and the `tools/` scripts) refuses to
+proceed if the resolved profile's declared identity
+(`scheduled_posting.identity_slug` in its `profile_config.json`) is either:
+
+- **a declared production identity** (listed in `PRODUCTION_IDENTITY_SLUGS`), or
+- **unresolvable** (no `identity_slug` set at all) — unknown is not the same
+  as a known dev identity, so it is refused rather than assumed safe.
+
+Pass `--allow-production` (or set `LINKEDIN_ALLOW_PRODUCTION=1`) to proceed
+anyway. The dashboard and the scheduler pass this automatically — that is
+production doing its job — so only an ad-hoc CLI/module run is affected. The
+refusal happens before any browser is created and exits with a distinct code
+(`3`, `profile_manager.EXIT_PRODUCTION_REFUSED`).
 
 ## Login & Sessions
 

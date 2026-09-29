@@ -29,6 +29,7 @@ import logging
 from . import profile_manager as pm
 from . import human_behavior as hb
 from . import post_store
+from . import post_urn
 from .failure_capture import capture_failure
 
 load_dotenv()
@@ -563,7 +564,30 @@ class LinkedInScraper:
     
     # LinkedIn posts are keyed by one of these URN types; any of them forms a
     # valid /feed/update/<urn>/ URL.
-    URN_RE = re.compile(r'urn:li:(?:activity|ugcPost|share):\d+')
+    #
+    # The SCRAPER's accepted set, and deliberately only these three. The
+    # grammar lives in post_urn (shared with the poster, which also accepts
+    # groupPost); widening this set changes which URNs the scraper records,
+    # and that is a separate decision (Dispatch 15.3 kept it unchanged).
+    URN_TYPES = ("activity", "ugcPost", "share")
+
+    @classmethod
+    def urn_in_text(cls, text: str) -> Optional[str]:
+        """First ``urn:li:<type>:<id>`` of an accepted type in DOM text."""
+        found = post_urn.find_post_urn(text, cls.URN_TYPES,
+                                       forms=(post_urn.URN_FORM,))
+        return found.urn if found else None
+
+    @classmethod
+    def urn_from_copied_link(cls, url: str) -> Optional[str]:
+        """The URN a copied post link carries in its slug (``-<type>-<id>``).
+
+        Slug form only, as it always was: a /feed/update/urn:li:... link
+        yields nothing here, and ``activity_urn`` is then left as is.
+        """
+        found = post_urn.find_post_urn(url, cls.URN_TYPES,
+                                       forms=(post_urn.SLUG_FORM,))
+        return found.urn if found else None
 
     def _extract_urn(self, element) -> Optional[str]:
         """Extract a post URN (activity, ugcPost, or share) from the element.
@@ -582,9 +606,9 @@ class LinkedInScraper:
         try:
             componentkey = element.get_attribute('componentkey')
             if componentkey:
-                match = self.URN_RE.search(componentkey)
-                if match:
-                    return match.group()
+                urn = self.urn_in_text(componentkey)
+                if urn:
+                    return urn
         except Exception:
             self.logger.debug("Failed to read componentkey for URN", exc_info=True)
 
@@ -593,9 +617,9 @@ class LinkedInScraper:
             try:
                 value = element.get_attribute(attr)
                 if value:
-                    match = self.URN_RE.search(value)
-                    if match:
-                        return match.group()
+                    urn = self.urn_in_text(value)
+                    if urn:
+                        return urn
             except Exception:
                 continue
 
@@ -604,18 +628,18 @@ class LinkedInScraper:
         try:
             for anchor in element.find_elements(By.CSS_SELECTOR, "a[href*='/feed/update/']"):
                 href = anchor.get_attribute('href') or ''
-                match = self.URN_RE.search(href)
-                if match:
-                    return match.group()
+                urn = self.urn_in_text(href)
+                if urn:
+                    return urn
         except Exception:
             self.logger.debug("Failed to scan anchors for URN", exc_info=True)
 
         # 4. fall back to scanning the element's inner HTML
         try:
             html = element.get_attribute('innerHTML') or ''
-            match = self.URN_RE.search(html)
-            if match:
-                return match.group()
+            urn = self.urn_in_text(html)
+            if urn:
+                return urn
         except Exception:
             self.logger.debug("Failed to extract URN from innerHTML", exc_info=True)
 
@@ -1141,9 +1165,10 @@ class LinkedInScraper:
 class LinkedInAIPostFinder:
     """Main class for finding AI-related posts on LinkedIn"""
     
-    def __init__(self, debug=False, profile_name=None):
+    def __init__(self, debug=False, profile_name=None, allow_production=False):
         self.profile_name = profile_name
         self.profile = None  # Set during setup_driver
+        self.allow_production = allow_production
 
         self.debug = debug
 
@@ -1201,8 +1226,9 @@ class LinkedInAIPostFinder:
         """Initialize Chrome driver with persistent session via profile manager"""
         self.logger.info("Setting up browser with persistent session...")
         
-        self.driver, self.profile = pm.create_driver(self.profile_name)
-        
+        self.driver, self.profile = pm.create_driver(
+            self.profile_name, allow_production=self.allow_production)
+
         self.scraper = LinkedInScraper(self.driver, self.logger)
         
         self.logger.info("Browser ready")
@@ -1388,9 +1414,9 @@ class LinkedInAIPostFinder:
                     clip_url = self.scraper.extract_url_via_clipboard(element)
                     if clip_url:
                         post.url = clip_url
-                        m = re.search(r'(activity|ugcPost|share)-(\d+)', clip_url)
-                        if m:
-                            post.activity_urn = f"urn:li:{m.group(1)}:{m.group(2)}"
+                        urn = LinkedInScraper.urn_from_copied_link(clip_url)
+                        if urn:
+                            post.activity_urn = urn
                         self.logger.info(f"  Resolved URL: {post.url}")
                     else:
                         self.logger.warning(
@@ -1610,6 +1636,9 @@ class LinkedInAIPostFinder:
         except pm.LoginRequiredError:
             # Distinct from generic errors so the caller can exit with code 2.
             raise
+        except pm.ProductionAccessRefused:
+            # Distinct from generic errors so the caller can exit with code 3.
+            raise
         except Exception as e:
             self.logger.error(f"Error: {e}")
             if self.debug:
@@ -1642,11 +1671,14 @@ def main():
     parser.add_argument('--min-quality', type=int, default=None, help='Minimum quality posts to find (default: profile config)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--profile', type=str, default=None, help='LinkedIn profile name (uses default if omitted)')
+    parser.add_argument('--allow-production', action='store_true',
+                         help='Allow running against a declared PRODUCTION identity')
 
     args = parser.parse_args()
 
     try:
-        finder = LinkedInAIPostFinder(debug=args.debug, profile_name=args.profile)
+        finder = LinkedInAIPostFinder(debug=args.debug, profile_name=args.profile,
+                                       allow_production=args.allow_production)
         # Explicit CLI args win; otherwise use the profile config, then hard defaults.
         max_posts = args.max_posts if args.max_posts is not None else (finder.cfg_max_posts or 50)
         min_quality = args.min_quality if args.min_quality is not None else (finder.cfg_min_quality or 10)
@@ -1662,6 +1694,10 @@ def main():
     except pm.LoginRequiredError as e:
         print(f"\n❌ {e}")
         sys.exit(pm.EXIT_LOGIN_REQUIRED)
+
+    except pm.ProductionAccessRefused as e:
+        print(f"\n❌ {e}")
+        sys.exit(pm.EXIT_PRODUCTION_REFUSED)
 
     except ValueError as e:
         print(f"\n❌ Configuration Error: {e}")

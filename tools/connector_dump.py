@@ -18,9 +18,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("search_url", help="LinkedIn people-search results URL")
     parser.add_argument("--profile", default=None)
+    parser.add_argument("--allow-production", action="store_true",
+                         help="Allow running against a declared PRODUCTION identity")
     args = parser.parse_args()
 
-    driver, profile = pm.create_driver(args.profile)
+    driver, profile = pm.create_driver(args.profile, allow_production=args.allow_production)
 
     try:
         print("Navigating to search URL...")

@@ -798,6 +798,8 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile", default="dev", help="profile name (default: dev)")
+    ap.add_argument("--allow-production", action="store_true",
+                     help="allow running against a declared PRODUCTION identity")
     ap.add_argument("--scrub-extra", action="append", default=[],
                     help="extra literal to redact, e.g. your display name (repeatable)")
     ap.add_argument("--outdir", default=OUT_DIR)
@@ -824,7 +826,7 @@ def main():
         print("  ! no --scrub-extra given. Pass your display name so the composer's")
         print("    author chip is redacted, e.g. --scrub-extra \"Jane Doe\"\n")
 
-    driver, profile = pm.create_driver(args.profile)
+    driver, profile = pm.create_driver(args.profile, allow_production=args.allow_production)
     h = Harvest(driver, args.scrub_extra, args.outdir)
     try:
         if not pm.login(driver, profile):

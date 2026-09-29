@@ -631,7 +631,7 @@ def check_registry(count_fn: Callable[[str], int], registry: Dict = None) -> Dic
     :class:`dom_probe.UnsupportedSelector`, which is deliberately allowed to
     propagate: it means the offline engine could not read the selector at all,
     and silently scoring that 0 would manufacture the false all-clear this whole
-    module exists to prevent (ARCHITECTURE.md §8.2). "I cannot check this" has to
+    module exists to prevent (docs/ARCHITECTURE.md §8.2). "I cannot check this" has to
     stay louder than "I checked this and found nothing".
     """
     registry = registry if registry is not None else SELECTOR_REGISTRY
@@ -920,13 +920,14 @@ def collect_diagnostics(driver, max_posts: int = 3) -> Dict:
     }
 
 
-def run_health_check(profile_name: str = None, scrolls: int = 3) -> Dict:
+def run_health_check(profile_name: str = None, scrolls: int = 3,
+                      allow_production: bool = False) -> Dict:
     """Open Chrome, scan the feed, and return the structured health result.
 
     Also writes selector_health.json under the profile data dir, a DOM dump when
     anything failed, and .dev/SELECTOR_FIX_NEEDED.md when a critical selector failed.
     """
-    driver, _profile = pm.create_driver(profile_name)
+    driver, _profile = pm.create_driver(profile_name, allow_production=allow_production)
     try:
         logger.info("Loading LinkedIn feed...")
         driver.get("https://www.linkedin.com/feed/")
@@ -1015,7 +1016,8 @@ def run_health_check(profile_name: str = None, scrolls: int = 3) -> Dict:
         driver.quit()
 
 
-def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3) -> Dict:
+def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3,
+                             allow_production: bool = False) -> Dict:
     """Check the connector's people-SEARCH-page selectors against a live search URL.
 
     Navigates to ``search_url`` (the same one passed to the connector), scrolls to
@@ -1024,7 +1026,7 @@ def run_search_health_check(profile_name: str, search_url: str, scrolls: int = 3
     Send button, which appears only after a Connect click) are skipped. Writes
     selector_health_search.json under the profile data dir.
     """
-    driver, _profile = pm.create_driver(profile_name)
+    driver, _profile = pm.create_driver(profile_name, allow_production=allow_production)
     try:
         logger.info(f"Loading people-search results: {search_url}")
         driver.get(search_url)
@@ -1173,7 +1175,8 @@ def _check_comment_box(driver) -> Dict:
     return checked
 
 
-def run_post_health_check(profile_name: str, post_url: str) -> Dict:
+def run_post_health_check(profile_name: str, post_url: str,
+                           allow_production: bool = False) -> Dict:
     """Check the POSTING path's selectors against a live post permalink URL.
 
     Navigates to ``post_url``, counts the page="post" registry entries, then opens
@@ -1184,7 +1187,7 @@ def run_post_health_check(profile_name: str, post_url: str) -> Dict:
     run reported HEALTHY while every post-detail selector was dead. Writes
     selector_health_post.json under the profile data dir.
     """
-    driver, _profile = pm.create_driver(profile_name)
+    driver, _profile = pm.create_driver(profile_name, allow_production=allow_production)
     try:
         logger.info(f"Loading post permalink: {post_url}")
         driver.get(post_url)
@@ -1302,6 +1305,8 @@ def main(argv=None) -> int:
                         choices=("feed", "search", "post", "composer"),
                         help="Which page's registry entries --fixture holds (default: feed)")
     parser.add_argument("--json", action="store_true", help="Print the JSON result to stdout")
+    parser.add_argument("--allow-production", action="store_true",
+                         help="Allow running against a declared PRODUCTION identity")
     args = parser.parse_args(argv)
 
     passed = [n for n, v in (("--search-url", args.search_url),
@@ -1337,14 +1342,20 @@ def main(argv=None) -> int:
     try:
         pm.auto_migrate_from_env()
         if args.search_url:
-            result = run_search_health_check(args.profile, args.search_url, scrolls=args.scrolls)
+            result = run_search_health_check(args.profile, args.search_url, scrolls=args.scrolls,
+                                              allow_production=args.allow_production)
         elif args.post_url:
-            result = run_post_health_check(args.profile, args.post_url)
+            result = run_post_health_check(args.profile, args.post_url,
+                                            allow_production=args.allow_production)
         else:
-            result = run_health_check(args.profile, scrolls=args.scrolls)
+            result = run_health_check(args.profile, scrolls=args.scrolls,
+                                       allow_production=args.allow_production)
     except pm.LoginRequiredError as e:
         print(f"\n❌ {e}")
         return pm.EXIT_LOGIN_REQUIRED
+    except pm.ProductionAccessRefused as e:
+        print(f"\n❌ {e}")
+        return pm.EXIT_PRODUCTION_REFUSED
     except Exception as e:
         print(f"\n❌ Health check failed: {e}")
         return pm.EXIT_ERROR

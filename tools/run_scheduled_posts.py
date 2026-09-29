@@ -78,6 +78,9 @@ def main():
     ap.add_argument("--wait", action="store_true",
                     help="comment pass: block until a due post publishes, "
                          "instead of leaving it for the next sweep")
+    ap.add_argument("--allow-production", action="store_true",
+                    help="allow the comment pass to run against a declared "
+                         "PRODUCTION identity")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -152,10 +155,15 @@ def main():
               "comment on a live post cannot be undone." % args.profile)
         return 2
 
-    results = cp.comment_pass(state, profile_name=args.profile,
-                              platform=pm.SCHEDULED_DEFAULT_PLATFORM,
-                              expect_slug=expect_identity,
-                              wait=args.wait)
+    try:
+        results = cp.comment_pass(state, profile_name=args.profile,
+                                  platform=pm.SCHEDULED_DEFAULT_PLATFORM,
+                                  expect_slug=expect_identity,
+                                  wait=args.wait,
+                                  allow_production=args.allow_production)
+    except pm.ProductionAccessRefused as e:
+        print(f"REFUSING: {e}")
+        return pm.EXIT_PRODUCTION_REFUSED
     print(cp.summarize([], results))
     return 1 if any(r.get("status") == cp.COMMENT_FAILED for r in results) else 0
 
