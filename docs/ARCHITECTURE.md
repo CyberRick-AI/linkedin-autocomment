@@ -723,12 +723,13 @@ against. A wrong display name costs a label, never a mis-addressed post — the
 post's identity (`get_identifier`, `x_finder.py:121`) is always the permalink,
 confirmed separately.
 
-**Selector health does not reach this page yet.** `x_selectors.py` registers
-`x_timeline`/`x_status`/`x_search` entries in `SELECTOR_REGISTRY` (e.g.
-`x_selectors.py:473`), but `selector_health.py`'s `--page` CLI flag only
-accepts `feed`/`search`/`post`/`composer` (`selector_health.py:1304-1305`) —
-LinkedIn's four pages. There is no live or fixture path to check an X selector
-through the shipped tool today; logged in `.dev/BACKLOG.md`.
+**Selector health does not reach this page yet.** `SELECTOR_REGISTRY` in
+`selector_health.py` registers `x_timeline`/`x_status`/`x_search` entries
+built from `x_selectors.py`'s constants (e.g. `selector_health.py:471`), but
+the module's `--page` CLI flag only accepts `feed`/`search`/`post`/`composer`
+(`selector_health.py:1304-1305`) — LinkedIn's four pages. There is no live or
+fixture path to check an X selector through the shipped tool today; logged in
+`.dev/BACKLOG.md`.
 
 ### 10.2 The write path — Buffer only, never a browser
 
