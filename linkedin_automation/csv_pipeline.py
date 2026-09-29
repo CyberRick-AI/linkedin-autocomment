@@ -30,11 +30,13 @@ import io
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from . import buffer_client as bc
 from . import first_comment as fc
 from . import image_host
+from . import platform_policy
 from . import profile_manager as pm
 
 from urllib.parse import unquote, urlparse
@@ -42,6 +44,10 @@ from urllib.parse import unquote, urlparse
 logger = logging.getLogger(__name__)
 
 STATE_NAME = "scheduled_posts_state.json"
+
+#: The platform whose behaviour is the historical default everywhere
+#: here. Mirrors post_store.X / platform_policy.PLATFORMS.
+X_PLATFORM = "x"
 
 COLUMNS = ("date", "time_window", "post_text", "topic", "tags", "image_path",
            "first_comment_link")
@@ -73,6 +79,10 @@ SCHEDULABLE_STATES = (PENDING, HELD)
 STAGE_PREPARE = "prepare"
 STAGE_CREATE_REFUSED = "createPost"
 STAGE_CREATE_UNKNOWN = "createPost_unknown"
+#: Buffer accepted the post and then the network refused to publish it.
+#: A FOURTH failure shape, distinct from the three above: the request
+#: succeeded, the post exists, and it still did not go out.
+STAGE_PUBLISH = "publish"
 
 #: What to tell an operator holding a row whose outcome is genuinely unknown.
 UNKNOWN_POST_WARNING = (
@@ -166,7 +176,55 @@ def read_rows(path):
         return parse_rows(f.read())
 
 
-def validate_row(row, now=None, tz=None):
+class IdentityRefused(RuntimeError):
+    """The account a run would post as is not the one configured.
+
+    Raised rather than returned so the whole run stops. A caller that ignored a
+    return value would schedule to the wrong account, and there is no undo.
+    """
+
+
+#: Every link on X is rewritten to a t.co shortlink of FIXED width, so a URL
+#: costs the same however long it is. Counting the raw URL would reject posts
+#: that fit and accept ones that do not.
+X_URL_COST = 23
+
+#: Anything link-shaped. Deliberately loose: over-counting a non-link is a
+#: rejected row a human can look at, while under-counting produces a post
+#: Buffer refuses at publish time.
+_URL_RE = re.compile(r"https?://\S+|\bwww\.\S+", re.IGNORECASE)
+
+
+def x_counted_length(text):
+    """Length as X counts it, with every URL charged at :data:`X_URL_COST`."""
+    if not text:
+        return 0
+    return len(_URL_RE.sub("u" * X_URL_COST, text))
+
+
+def compose_for_platform(text, tags, link=None, platform=None):
+    """The post body, with the first-comment link placed per PLATFORM.
+
+    WHERE THE LINK GOES IS A PLATFORM DECISION, not a new CSV column. The same
+    row means "put this link with the post"; what differs is how each site lets
+    you do that.
+
+    * **linkedin** — the link goes in a FIRST COMMENT, posted by the browser
+      pass after publication. Buffer's ``firstComment`` is paywalled on the free
+      plan and rejects the whole post, so the browser owns that half.
+    * **x** — the link goes in the BODY, one tweet carrying image, text and
+      link together. X's threaded self-reply (``metadata.twitter.thread``) is
+      free, but Phase 1's live run showed it DROPS THE BASE POST'S IMAGE, and
+      trading the image for a threaded reply is the wrong trade here.
+    """
+    body = bc.compose_text(text, tags)
+    link = (link or "").strip()
+    if link and (platform or "").lower() == X_PLATFORM:
+        body = "%s\n\n%s" % (body, link)
+    return body
+
+
+def validate_row(row, now=None, tz=None, platform=None):
     """Return a list of problems. Empty means the row is actionable.
 
     Everything is checked BEFORE any row is acted on, so a bad row is never
@@ -194,14 +252,49 @@ def validate_row(row, now=None, tz=None):
                 image_host.read_image(image)
             except image_host.ImageHostError as exc:
                 problems.append(str(exc))
+
+    # X is the only platform with a POSTABLE hard limit. platform_policy says
+    # so directly: X counts characters with hard_max_is_postable_limit=True,
+    # while LinkedIn's hard_max is 70 WORDS with that flag False - a style
+    # guide, not a rule Buffer enforces. So LinkedIn stays unbounded here and
+    # nothing about its validation changes.
+    #
+    # Rejected, never truncated: a post cut mid-sentence is worse than one that
+    # did not go out, and the link is at the END, so truncation would silently
+    # drop the thing the row exists to share.
+    if (platform or "").lower() == X_PLATFORM and text:
+        policy = platform_policy.policy_for(X_PLATFORM)
+        limit = policy.length.hard_max
+        body = compose_for_platform(text, row.get("tags"),
+                                    row.get("first_comment_link"), X_PLATFORM)
+        used = x_counted_length(body)
+        if used > limit:
+            problems.append(
+                "too long for X: %d characters against a %d limit (every link "
+                "counts as %d, whatever its real length). Shorten post_text, "
+                "tags or the link - this is never truncated automatically."
+                % (used, limit, X_URL_COST))
     return problems
 
 
 class PipelineState:
     """Per-row progress, so a re-run resumes instead of re-publishing."""
 
-    def __init__(self, path=None, profile_name=None):
-        self.path = path or os.path.join(pm.get_data_dir(profile_name), STATE_NAME)
+    def __init__(self, path=None, profile_name=None, platform=None):
+        # Two platforms are two state files, for the same reason post_store
+        # splits its stores: a row keyed the same way on both would let an X
+        # run read LinkedIn's progress and decide a post already exists.
+        # LinkedIn keeps the path it has always had, so nothing migrates.
+        self.platform = (platform or pm.SCHEDULED_DEFAULT_PLATFORM).lower()
+        if path:
+            self.path = path
+        elif self.platform == pm.SCHEDULED_DEFAULT_PLATFORM:
+            # LinkedIn's call is UNCHANGED, down to the argument count, so its
+            # path cannot move and nothing needs migrating.
+            self.path = os.path.join(pm.get_data_dir(profile_name), STATE_NAME)
+        else:
+            self.path = os.path.join(
+                pm.get_data_dir(profile_name, self.platform), STATE_NAME)
         self.rows = self._load()
 
     def _load(self):
@@ -296,7 +389,125 @@ def profile_slug(url):
     return None
 
 
-def verify_identity(poster, expect_slug):
+def channel_handle(channel):
+    """The account handle a Buffer channel actually posts as, or None.
+
+    Buffer does not expose a field called "handle". ``name`` carries it for X
+    (the spike's channel listing showed ``AI_Fun_times service=twitter``), and
+    ``externalLink`` carries the profile URL, whose last segment is the same
+    handle. Both are read, in that order, so the check does not depend on which
+    one Buffer happens to populate for a given service.
+
+    ``displayName`` is deliberately NOT used: it is a human-facing label ("AI
+    Fun Times"), not an identity, and accepting it would let a guard pass on a
+    string nobody posts as.
+    """
+    if not isinstance(channel, dict):
+        return None
+    name = (channel.get("name") or "").strip().lstrip("@")
+    if name:
+        return name
+    link = (channel.get("externalLink") or "").strip().rstrip("/")
+    if link:
+        tail = link.split("/")[-1].strip().lstrip("@")
+        if tail and "." not in tail:          # not a bare domain
+            return tail
+    return None
+
+
+def verify_channel_identity(expect_slug, channel):
+    """Does this Buffer channel post as ``expect_slug``? Pure; no network.
+
+    The Buffer-side half of the guard, kept separate from fetching so it can be
+    unit-tested against a dict and reused by any platform that schedules through
+    Buffer. LinkedIn does not use it yet — see .dev/BACKLOG.md for why that is a
+    later, separately-verified change and not a free win.
+
+    Comparison is EXACT after case-folding, because X handles are
+    case-insensitive but not otherwise fuzzy. Nothing substring-matches here:
+    the LinkedIn guard learned that lesson when ``example-person`` matched
+    ``example-person-011011``, a different human.
+    """
+    want = (expect_slug or "").strip().lstrip("@").lower()
+    if not want:
+        return False, ("no expected identity configured - refusing to act as "
+                       "this channel")
+
+    got = channel_handle(channel)
+    if not got:
+        return False, ("Buffer did not say which account this channel posts as "
+                       "(no name or externalLink), so the identity cannot be "
+                       "confirmed - refusing")
+
+    if got.lower() == want:
+        return True, got
+    return False, ("channel posts as %r, expected %r - refusing to schedule"
+                   % (got, expect_slug))
+
+
+def verify_buffer_identity(expect_slug, channel_id, key=None, session=None,
+                           fetch=None):
+    """Fetch the channel and confirm it posts as ``expect_slug``.
+
+    ONE request, once per run, before anything is created. A wrong channel id
+    with a valid key would otherwise publish to the wrong account and there is
+    no undo.
+
+    ``fetch`` is injectable so this is testable without a network, the same way
+    ``reconcile_published`` takes one.
+    """
+    fetch = fetch or bc.get_channel
+    try:
+        channel = fetch(channel_id, key=key, session=session)
+    except Exception as exc:
+        return False, ("could not confirm the Buffer channel's identity: %s"
+                       % exc)
+    return verify_channel_identity(expect_slug, channel)
+
+
+def verify_identity(platform, expect_slug, poster=None, channel_id=None,
+                    key=None, session=None, fetch_channel=None):
+    """Confirm we are about to act as the account we mean to act as.
+
+    Platform-dispatched, because the two platforms act at different moments and
+    a guard must fire before ITS action, not before some other platform's:
+
+    * **linkedin** drives a browser and acts when it comments, so the guard is
+      the existing ``/in/me/`` check at comment time. Unchanged.
+    * **x** never drives a browser. Its only action is the scheduled post, so
+      the guard is a Buffer channel-handle check at SCHEDULE time, before any
+      ``createPost``.
+
+    **An empty slug now fails CLOSED, on both paths.** It used to return True
+    with "no expected identity configured", which meant an unconfigured profile
+    had no protection at all from the one control standing between this tool and
+    posting as the wrong real person. A guard whose default is "allow" is a
+    guard that is off. The CLI already refused to run a comment pass without a
+    slug; that refusal was the only thing making the open default survivable,
+    and it did not cover any other caller.
+    """
+    want = (expect_slug or "").strip()
+    if not want:
+        return False, ("no expected identity configured - refusing to act. Set "
+                       "scheduled_posting.identity_slug (or the platform's "
+                       "overlay) for this profile.")
+
+    platform = (platform or pm.SCHEDULED_DEFAULT_PLATFORM).strip().lower()
+
+    if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        if not channel_id:
+            return False, ("no Buffer channel to check the %s identity against "
+                           "- refusing" % platform)
+        return verify_buffer_identity(want, channel_id, key=key,
+                                      session=session, fetch=fetch_channel)
+
+    if poster is None:
+        return False, ("no browser session to confirm the LinkedIn identity "
+                       "with - refusing")
+    return _verify_identity_linkedin(poster, want)
+
+
+def _verify_identity_linkedin(poster, expect_slug):
     """Confirm the browser session is the account we mean to act as.
 
     The DEFAULT profile is the real account. Commenting from the wrong identity
@@ -311,8 +522,8 @@ def verify_identity(poster, expect_slug):
     person. The one guard standing between this tool and commenting as the
     wrong real human cannot be the loosest comparison available.
     """
-    if not expect_slug:
-        return True, "no expected identity configured"
+    # Reached only with a non-empty slug: the dispatcher refuses an empty one
+    # for every platform, so this no longer has an open default.
     want = expect_slug.strip().lower().rstrip("/")
     # Tolerate a whole URL in the config as well as a bare slug.
     want = profile_slug(want) or want
@@ -482,7 +693,7 @@ RECONCILABLE_STATES = (SCHEDULED,)
 
 
 def reconcile_published(state, channel_id, key=None, session=None, fetch=None,
-                        limit=100):
+                        limit=100, platform=None):
     """Ask Buffer what actually happened to rows we still believe are SCHEDULED.
 
     Buffer publishes on its own timetable. Nothing in this tool notices unless
@@ -503,8 +714,22 @@ def reconcile_published(state, channel_id, key=None, session=None, fetch=None,
     if not waiting:
         return []
 
+    platform = (platform or pm.SCHEDULED_DEFAULT_PLATFORM).lower()
+
+    # CREATE-SUCCESS IS NOT PUBLISH-SUCCESS ON X (Phase 1, live). A post that
+    # createPost accepted can still fail at publish time - the picsum run came
+    # back HTTP 405 "Media URL not publicly accessible" AFTER a clean create.
+    # A reconcile that only asks about `sent` never learns that, and the row
+    # sits reading "scheduled" forever while the truth is that it failed.
+    #
+    # So X asks about errors too. LinkedIn's query is untouched: adding a
+    # status to it would change which posts the production path reconciles.
+    statuses = ("sent",)
+    if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        statuses = ("sent", "error")
+
     fetch = fetch or bc.posts_by_status
-    sent = fetch(channel_id, statuses=("sent",), limit=limit, key=key,
+    sent = fetch(channel_id, statuses=statuses, limit=limit, key=key,
                  session=session) or {}
 
     changed = []
@@ -512,6 +737,23 @@ def reconcile_published(state, channel_id, key=None, session=None, fetch=None,
         node = sent.get(entry.get("post_id"))
         if not node:
             continue
+
+        if (node.get("status") or "").lower() == "error":
+            # Buffer tried and the network refused it. FAILED, not published:
+            # calling it published would send the comment pass chasing a post
+            # that does not exist, and would hide the reason from the operator.
+            reason = ((node.get("error") or {}).get("message")
+                      if isinstance(node.get("error"), dict)
+                      else node.get("error")) or "Buffer reported status=error"
+            state.update(rkey, status=FAILED, stage=STAGE_PUBLISH,
+                         errors=["publish failed: %s" % reason])
+            changed.append({"key": rkey, "post_id": entry.get("post_id"),
+                            "status": FAILED, "permalink": None,
+                            "error": reason})
+            logger.warning("reconciled %s: Buffer FAILED to publish it (%s)",
+                           rkey, reason)
+            continue
+
         permalink = (node.get("externalLink") or "").strip() or None
         fields = {"status": PUBLISHED,
                   "published_at": node.get("sentAt") or entry.get("published_at")}
@@ -533,7 +775,9 @@ def reconcile_published(state, channel_id, key=None, session=None, fetch=None,
 
 def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
                   upload=None, generate=None, profile_name=None, now=None,
-                  max_new=None, slot_limit=None):
+                  max_new=None, slot_limit=None, platform=None,
+                  identity_slug=None, fetch_channel=None,
+                  allow_production=False):
     """Validate and create every post that does not already have one.
 
     ``max_new`` is the number of scheduled-post slots Buffer actually has free.
@@ -546,6 +790,42 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
     """
     results = []
     tz = bc.posting_timezone()
+    platform = (platform or pm.SCHEDULED_DEFAULT_PLATFORM).lower()
+
+    # THE IDENTITY GUARD LIVES HERE, not in the CLI.
+    #
+    # Phase 3 wired it into tools/run_scheduled_posts.py, which covered the one
+    # caller that existed. This is the chokepoint every X schedule must pass
+    # through - the CLI, the Phase 5 drain, and anything added later - so no
+    # future caller can reach createPost without it. A guard one caller can
+    # skip is a guard that will eventually be skipped.
+    #
+    # Once per CALL, not per row: one request, before anything is created.
+    #
+    # LinkedIn is deliberately not gated here - see .dev/BACKLOG.md. Its
+    # schedule path is byte-identical, this branch simply does not run.
+    if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        # PRODUCTION GATE, before verify_identity - which itself is a live
+        # Buffer call. verify_identity answers "is this the right channel";
+        # this answers "did the caller declare authorization to touch a
+        # declared-production identity" (docs/ARCHITECTURE.md §9). Both must
+        # run; this one runs first so a declared-production identity never
+        # reaches Buffer at all, not even for the identity check itself.
+        pm.check_declared_production(
+            identity_slug, "schedule a Buffer post on %s" % platform,
+            allow_production=allow_production)
+
+        ok, detail = verify_identity(platform, identity_slug,
+                                     channel_id=channel_id, key=key,
+                                     session=session,
+                                     fetch_channel=fetch_channel)
+        if not ok:
+            raise IdentityRefused(
+                "refusing to schedule on %s: %s. Nothing was created."
+                % (platform, detail))
+        logger.info("identity confirmed on %s: channel posts as %s",
+                    platform, detail)
+
     created = 0
     held = 0
     for row in rows:
@@ -562,7 +842,7 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
             results.append(result)
             continue
 
-        problems = validate_row(row, now=now, tz=tz)
+        problems = validate_row(row, now=now, tz=tz, platform=platform)
         if problems:
             state.update(rkey, status=FAILED, stage="validate", errors=problems,
                          text=row_preview(row))
@@ -594,7 +874,11 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
             if not text:
                 text = (generate or generate_text)(
                     (row.get("topic") or "").strip(), profile_name=profile_name)
-            body = bc.compose_text(text, row.get("tags"))
+            # On X the link rides in the body; on LinkedIn it stays out and
+            # the browser pass comments it. Same row, different placement.
+            body = compose_for_platform(text, row.get("tags"),
+                                        row.get("first_comment_link"),
+                                        platform)
 
             image_url = None
             image = row_image_path(row)
@@ -663,7 +947,8 @@ def schedule_pass(rows, channel_id, state, rng=None, key=None, session=None,
 
 def comment_pass(state, key=None, session=None, poster=None, ledger=None,
                  profile_name=None, expect_slug=None, wait=False,
-                 wait_timeout=1800, allow_production=False):
+                 wait_timeout=1800, platform=pm.SCHEDULED_DEFAULT_PLATFORM,
+                 allow_production=False):
     """Sweep for published posts and add their first comments.
 
     Non-blocking by default: a row whose post has not published yet is left
@@ -730,7 +1015,8 @@ def comment_pass(state, key=None, session=None, poster=None, ledger=None,
                 continue
 
         if not identity_checked:
-            ok, detail = verify_identity(poster, expect_slug)
+            ok, detail = verify_identity(platform, expect_slug,
+                                         poster=poster)
             if not ok:
                 logger.error("IDENTITY GUARD: %s", detail)
                 for k2, _ in pending:

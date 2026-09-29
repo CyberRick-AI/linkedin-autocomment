@@ -46,6 +46,7 @@ from .auto_connector import LinkedInAutoConnector
 from .comment_poster import LinkedInCommentPoster
 from .poster import LinkedInPoster
 from .failure_capture import capture_failure
+from . import x_selectors as xs
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +450,169 @@ SELECTOR_REGISTRY: Dict[str, Dict] = {
         "fix_symbol": "LinkedInCommentPoster.SUBMIT_BUTTON_XPATH / SUBMIT_BUTTON_FALLBACK_SELECTORS",
         "note": ("first entry is an XPath matched on visible text; only present "
                  "after the comment box is opened, and NEVER clicked by the check"),
+    },
+    # ─── X (page="x_timeline" / "x_status" / "x_search") ─────────────────────
+    #
+    # Registered from linkedin_automation/x_selectors.py, which carries the
+    # provenance: every selector below was observed in one of the four live
+    # captures, not guessed. See .dev/AUDIT_x_harvest_state.md.
+    #
+    # The page keys are X-specific ON PURPOSE. Every LinkedIn path — the live
+    # feed run, the live search run, the live post run, and check_fixture's
+    # default — filters on `page`, and `page` defaults to "feed". An X entry is
+    # therefore invisible to every LinkedIn check, and a LinkedIn entry to every
+    # X one. That isolation is asserted in test_x_selector_registry.py.
+    #
+    # NOTHING HERE IS GATED. On LinkedIn the comment editor does not exist until
+    # the box is opened; on X the status page ships its reply composer in the
+    # initial DOM (the `status` and `composer_open` captures hold identical
+    # structural testids). Inventing a gate flag to mirror LinkedIn would claim
+    # an interaction the capture shows is not needed.
+    "x_timeline_row": {
+        "selectors": list(xs.TWEET_ROW_SELECTORS),
+        "min_expected": 3, "critical": True, "page": "x_timeline",
+        "fix_symbol": "x_selectors.TWEET_ROW_SELECTORS",
+        "note": ("the virtualized row. Rows LEAVE the DOM on scroll (9 -> 18 "
+                 "permalinks across 3 scrolls), so a harvester must read as it "
+                 "scrolls, not once at the end"),
+    },
+    "x_tweet_card": {
+        "selectors": list(xs.TWEET_CARD_SELECTORS),
+        "min_expected": 3, "critical": True, "page": "x_timeline",
+        "fix_symbol": "x_selectors.TWEET_CARD_SELECTORS",
+    },
+    "x_tweet_text": {
+        "selectors": list(xs.TWEET_TEXT_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_timeline",
+        "fix_symbol": "x_selectors.TWEET_TEXT_SELECTORS",
+    },
+    "x_tweet_author": {
+        "selectors": list(xs.AUTHOR_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_timeline",
+        "fix_symbol": "x_selectors.AUTHOR_SELECTORS",
+    },
+    "x_tweet_permalink": {
+        "selectors": list(xs.PERMALINK_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_timeline",
+        "fix_symbol": "x_selectors.PERMALINK_SELECTORS",
+        "note": ("a PLAIN href — no overflow menu, no clipboard. This is the "
+                 "finding the whole X read path rests on, so it is critical: "
+                 "if it dies the adapter cannot address a single post"),
+    },
+    "x_tweet_avatar": {
+        "selectors": list(xs.AVATAR_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.AVATAR_SELECTORS",
+    },
+    "x_overflow_menu": {
+        "selectors": list(xs.OVERFLOW_MENU_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.OVERFLOW_MENU_SELECTORS",
+        "note": ("watched, but NOT on the permalink path the way LinkedIn's "
+                 "control menu is — X exposes the permalink directly"),
+    },
+    "x_reply_button": {
+        "selectors": list(xs.REPLY_BUTTON_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_timeline",
+        "fix_symbol": "x_selectors.REPLY_BUTTON_SELECTORS",
+        "note": "the engagement path's entry point, so a 0 here is BROKEN",
+    },
+    "x_like_button": {
+        "selectors": list(xs.LIKE_BUTTON_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.LIKE_BUTTON_SELECTORS",
+    },
+    "x_retweet_button": {
+        "selectors": list(xs.RETWEET_BUTTON_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.RETWEET_BUTTON_SELECTORS",
+    },
+    "x_scroll_container": {
+        "selectors": list(xs.PRIMARY_COLUMN_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.PRIMARY_COLUMN_SELECTORS",
+    },
+    "x_new_tweet_button": {
+        "selectors": list(xs.NEW_TWEET_BUTTON_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.NEW_TWEET_BUTTON_SELECTORS",
+    },
+    "x_follow_button": {
+        "selectors": list(xs.FOLLOW_BUTTON_SELECTORS)
+        + list(xs.UNFOLLOW_BUTTON_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_timeline",
+        "fix_symbol": "x_selectors.FOLLOW_BUTTON_SELECTORS",
+        "note": ("suffix-matched: X names these '<account-id>-follow'. Seen in "
+                 "the timeline and search sidebars. THE PROFILE PAGE HAS NEVER "
+                 "BEEN DUMPED, so this is not profile-page coverage and stays "
+                 "non-critical until it is"),
+    },
+    # ─── The status page: read the post, write the reply ─────────────────────
+    "x_status_tweet": {
+        "selectors": list(xs.TWEET_CARD_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_status",
+        "fix_symbol": "x_selectors.TWEET_CARD_SELECTORS",
+        "note": "proves the permalink page rendered, like LinkedIn's post_detail",
+    },
+    "x_status_text": {
+        "selectors": list(xs.TWEET_TEXT_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_status",
+        "fix_symbol": "x_selectors.TWEET_TEXT_SELECTORS",
+    },
+    "x_status_back": {
+        "selectors": list(xs.STATUS_BACK_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_status",
+        "fix_symbol": "x_selectors.STATUS_BACK_SELECTORS",
+        "note": ("also present on search, so it does NOT prove a status page "
+                 "loaded and is not used as a witness"),
+    },
+    "x_reply_editor": {
+        "selectors": list(xs.REPLY_EDITOR_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_status",
+        "fix_symbol": "x_selectors.REPLY_EDITOR_SELECTORS",
+        "note": ("present on page LOAD — no click needed, unlike LinkedIn. But "
+                 "tweetTextarea_0 also exists on the TIMELINE, so the finder "
+                 "must scope this to the status page rather than assume a "
+                 "single document-wide match"),
+    },
+    "x_reply_submit": {
+        "selectors": list(xs.REPLY_SUBMIT_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_status",
+        "fix_symbol": "x_selectors.REPLY_SUBMIT_SELECTORS",
+        "note": "the write path: a 0 here means no reply can be posted at all",
+    },
+    "x_status_witness": {
+        "selectors": list(xs.STATUS_WITNESS_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_status",
+        "fix_symbol": "x_selectors.STATUS_WITNESS_SELECTORS",
+        "note": ("the ONLY captured hook unique to a status page. Registered so "
+                 "the watchdog notices if the one thing that can tell a status "
+                 "page from a feed disappears"),
+    },
+    # ─── Search: the same card shape, plus its own chrome ─────────────────────
+    "x_search_result_card": {
+        "selectors": list(xs.TWEET_CARD_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_search",
+        "fix_symbol": "x_selectors.TWEET_CARD_SELECTORS",
+        "note": ("search renders the SAME card as the timeline — no "
+                 "search-specific card shape, so one card parser serves both"),
+    },
+    "x_search_result_permalink": {
+        "selectors": list(xs.PERMALINK_SELECTORS),
+        "min_expected": 1, "critical": True, "page": "x_search",
+        "fix_symbol": "x_selectors.PERMALINK_SELECTORS",
+        "note": "the plain-href finding holds on search too (15 in the capture)",
+    },
+    "x_search_input": {
+        "selectors": list(xs.SEARCH_INPUT_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_search",
+        "fix_symbol": "x_selectors.SEARCH_INPUT_SELECTORS",
+    },
+    "x_search_filters": {
+        "selectors": list(xs.SEARCH_FILTER_SELECTORS),
+        "min_expected": 1, "critical": False, "page": "x_search",
+        "fix_symbol": "x_selectors.SEARCH_FILTER_SELECTORS",
+        "note": "losing these costs filtering, not results",
     },
 }
 

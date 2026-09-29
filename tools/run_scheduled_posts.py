@@ -62,7 +62,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pass_name", choices=["schedule", "comment", "status"])
     ap.add_argument("--csv", help="the content calendar (schedule pass)")
-    ap.add_argument("--channel-id", help="Buffer LinkedIn channel id")
+    ap.add_argument("--channel-id",
+                    help="Buffer channel id. Defaults to the resolved "
+                         "value for --profile/--platform; pass it only "
+                         "to override.")
+    ap.add_argument("--platform", default=pm.SCHEDULED_DEFAULT_PLATFORM,
+                    help="which platform's settings to resolve "
+                         "(default linkedin)")
     ap.add_argument("--profile", default=None,
                     help="browser profile for the comment pass")
     ap.add_argument("--expect-identity", default=None, metavar="SLUG",
@@ -73,15 +79,29 @@ def main():
                     help="comment pass: block until a due post publishes, "
                          "instead of leaving it for the next sweep")
     ap.add_argument("--allow-production", action="store_true",
-                    help="allow the comment pass to run against a declared "
-                         "PRODUCTION identity")
+                    help="allow the schedule or comment pass to run against "
+                         "a declared PRODUCTION identity")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
 
-    state = cp.PipelineState(profile_name=args.profile)
+    # ONE source for the channel id and the identity. These used to be
+    # CLI-only, which made this tool an independent SECOND source of the
+    # same settings the dashboard read from config - and two sources are
+    # two chances to post to the wrong account. The flags now OVERRIDE
+    # the resolver rather than replacing it.
+    try:
+        resolved = pm.resolve_scheduled(args.profile, args.platform)
+    except pm.ScheduledConfigError as exc:
+        print("REFUSING: %s" % exc)
+        return 2
+    channel_id = args.channel_id or resolved["channel_id"]
+    expect_identity = args.expect_identity or resolved["identity_slug"]
+
+    state = cp.PipelineState(profile_name=args.profile,
+                             platform=args.platform)
 
     if args.pass_name == "status":
         print(cp.summarize(
@@ -91,24 +111,58 @@ def main():
         return 0
 
     if args.pass_name == "schedule":
-        if not args.csv or not args.channel_id:
-            ap.error("schedule needs --csv and --channel-id")
+        if not args.csv:
+            ap.error("schedule needs --csv")
+        if not channel_id:
+            ap.error(
+                "no Buffer channel id: pass --channel-id, or set the "
+                "buffer_channel_id for profile %r on platform %r"
+                % (args.profile, args.platform))
         rows = cp.read_rows(args.csv)
         print("read %d rows from %s" % (len(rows), args.csv))
-        results = cp.schedule_pass(rows, args.channel_id, state,
-                                   profile_name=args.profile)
+        # The identity guard now lives INSIDE schedule_pass, so every caller
+        # is covered rather than just this one. It raises rather than returning
+        # a value that could be ignored.
+        try:
+            results = cp.schedule_pass(rows, channel_id, state,
+                                       profile_name=args.profile,
+                                       key=resolved["api_key"],
+                                       platform=args.platform,
+                                       identity_slug=expect_identity,
+                                       allow_production=args.allow_production)
+        except cp.IdentityRefused as exc:
+            print("REFUSING: %s" % exc)
+            return 2
+        except pm.ProductionAccessRefused as exc:
+            print("REFUSING: %s" % exc)
+            return pm.EXIT_PRODUCTION_REFUSED
         print(cp.summarize(results, []))
         failed = [r for r in results if r.get("status") == cp.FAILED]
         return 1 if failed else 0
 
-    if not args.expect_identity:
-        print("REFUSING: --expect-identity is required for the comment pass.\n"
-              "The default browser profile is the real account, and a comment "
-              "on a live post cannot be undone.")
+    # Checked FIRST, because it is the more specific answer. Asking an X run
+    # to set an identity_slug sends the operator to fix a config field that
+    # would not have helped: X has no comment pass at all.
+    if args.platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        print("REFUSING: the comment pass is LinkedIn-only. On %s the link "
+              "rides in the post body, so there is nothing left to comment "
+              "and no browser to comment with." % args.platform)
         return 2
+
+    # The refusal STAYS. An empty slug now fails closed inside
+    # verify_identity too, but this one names the fix, and it stops the run
+    # before a browser is ever opened.
+    if not expect_identity:
+        print("REFUSING: no expected identity. Pass --expect-identity, or "
+              "set scheduled_posting.identity_slug for profile %r.\n"
+              "The default browser profile is the real account, and a "
+              "comment on a live post cannot be undone." % args.profile)
+        return 2
+
     try:
         results = cp.comment_pass(state, profile_name=args.profile,
-                                  expect_slug=args.expect_identity,
+                                  platform=pm.SCHEDULED_DEFAULT_PLATFORM,
+                                  expect_slug=expect_identity,
                                   wait=args.wait,
                                   allow_production=args.allow_production)
     except pm.ProductionAccessRefused as e:

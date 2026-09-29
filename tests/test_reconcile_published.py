@@ -405,4 +405,9 @@ def test_the_send_paths_in_the_dashboard_ask_for_a_fresh_count():
     for fn in ("_scheduled_schedule_job", "_drain_feed_job"):
         start = src.index("def %s(" % fn)
         body = src[start:start + 2500]
-        assert "scheduled_slots(channel_id, max_age=0)" in body, fn
+        # Matched on the CALL plus max_age=0 rather than one exact
+        # literal: the schedule job also passes a resolved key now, and
+        # the rule being asserted is "asks for a fresh count", not the
+        # argument list.
+        call = body.index("scheduled_slots(channel_id,")
+        assert "max_age=0" in body[call:call + 200], fn

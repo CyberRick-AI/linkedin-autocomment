@@ -368,9 +368,27 @@ class ContentAnalyzer:
         
         return "other"
     
-    def analyze(self, text: str) -> Tuple[bool, int, List[str], PostQuality, str]:
-        """Analyze text for AI relevance and quality"""
-        if not text or len(text) < 30:  # Require a minimum amount of text
+    #: The shortest text worth analysing, in characters.
+    #:
+    #: A LinkedIn-shaped number: LinkedIn posts are long-form, so anything under
+    #: 30 characters is a reaction, not a post. X's register is compressed
+    #: (platform_policy counts X in characters, LinkedIn in words), where the
+    #: same floor would discard substantive posts wholesale — so the X finder
+    #: passes its own via `min_length` rather than this default moving.
+    MIN_TEXT_LENGTH = 30
+
+    def analyze(self, text: str, min_length: int = None
+                ) -> Tuple[bool, int, List[str], PostQuality, str]:
+        """Analyze text for AI relevance and quality.
+
+        ``min_length`` defaults to :attr:`MIN_TEXT_LENGTH`, so every existing
+        LinkedIn caller behaves exactly as before. Everything past this floor —
+        the keyword tiers, the post-type classifier, the quality bands — is
+        about what a post SAYS rather than which site it is on, which is why the
+        X finder shares this analyzer instead of growing a parallel one.
+        """
+        floor = self.MIN_TEXT_LENGTH if min_length is None else min_length
+        if not text or len(text) < floor:  # Require a minimum amount of text
             return False, 0, [], PostQuality.SKIP, "other"
         
         text_lower = text.lower()

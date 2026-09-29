@@ -1,0 +1,91 @@
+<!--
+  Synthetic X search-results page (?q=...&f=live). Hand-authored, no live data.
+
+  Satisfies every page="x_search" registry entry:
+    x_search_result_card       [data-testid='tweet']                     (min 1)
+    x_search_result_permalink  a[href*='/status/']                       (min 1)
+    x_search_input             [data-testid='SearchBox_Search_Input']    (min 1)
+    x_search_filters           [data-testid='searchFiltersAdvancedSearch'] (min 1)
+
+  THE CARDS ARE THE SAME CARDS.
+
+  The search capture rendered cellInnerDiv / tweet / tweetText / User-Name and
+  the whole action row exactly as the timeline does — there is no
+  search-specific card shape, so the finder needs ONE card parser, not two. The
+  only thing search adds is its own chrome: the filter rail, the overflow button
+  beside the box, and the location/people radio groups.
+
+  The permalink finding holds here too: 15 plain /status/ hrefs in the capture,
+  with no interaction.
+
+  WHAT THIS PAGE DOES NOT HAVE: tweetTextarea_0. The inline composer is absent
+  from search, which is the asymmetry that makes "scope the composer lookup"
+  concrete rather than theoretical.
+-->
+<html>
+<head><title>synthetic query - Search / X</title></head>
+<body>
+<div id="react-root">
+
+  <header role="banner">
+    <button data-testid="app-bar-back" aria-label="Back"></button>
+    <label data-testid="SearchBox_Search_Input_label" for="search">Search</label>
+    <input data-testid="SearchBox_Search_Input" id="search" type="text" value="synthetic query">
+    <button data-testid="searchBoxOverflowButton" aria-label="Search settings"></button>
+    <a data-testid="SideNav_NewTweet_Button" href="/compose/post" role="button">Post</a>
+  </header>
+
+  <div data-testid="primaryColumn">
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar"><a href="/user1"><img alt=""></a></div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account One</span><span>@user1</span>
+        </div>
+        <a href="/user1/status/9999999999999990005"><time>12m</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">A synthetic result matching the synthetic query.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="0 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar"><a href="/user6"><img alt=""></a></div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account Six</span><span>@user6</span>
+        </div>
+        <a href="/user6/status/9999999999999990006"><time>48m</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">A second synthetic result.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="1 Reply. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="2 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+  </div>
+
+  <div data-testid="sidebarColumn">
+    <!-- Search's own chrome, harvested 2026-08-28. -->
+    <a data-testid="searchFiltersAdvancedSearch" href="/search-advanced">Advanced search</a>
+    <div data-testid="radioGroupPeople" role="radiogroup" aria-label="People"></div>
+    <div data-testid="radioGroupLocation" role="radiogroup" aria-label="Location"></div>
+    <div data-testid="UserCell">
+      <div data-testid="User-Name"><span>Synthetic Account Seven</span><span>@user7</span></div>
+      <button data-testid="9999999993-follow" aria-label="Follow @user7">Follow</button>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -93,7 +93,7 @@ def patched(monkeypatch):
     fake = FakeBuffer()
     monkeypatch.setattr(cp.bc, "create_post", fake.create_post)
     monkeypatch.setattr(cp.bc, "get_post", fake.get_post)
-    monkeypatch.setattr(cp, "verify_identity", lambda p, s: (True, "ok"))
+    monkeypatch.setattr(cp, "verify_identity", lambda *a, **k: (True, "ok"))
     return fake
 
 
@@ -255,7 +255,7 @@ def test_a_published_post_gets_its_comment(state, monkeypatch, ledger):
     fake = FakeBuffer(status="sent", link=PERMALINK)
     monkeypatch.setattr(cp.bc, "create_post", fake.create_post)
     monkeypatch.setattr(cp.bc, "get_post", fake.get_post)
-    monkeypatch.setattr(cp, "verify_identity", lambda p, s: (True, "ok"))
+    monkeypatch.setattr(cp, "verify_identity", lambda *a, **k: (True, "ok"))
     cp.schedule_pass([make_row()], "chan", state, now=NOW)
     poster = FakePoster()
     out = cp.comment_pass(state, poster=poster, ledger=ledger)
@@ -280,7 +280,7 @@ def test_a_failed_comment_leaves_the_post_live_and_flags_a_human(state,
     fake = FakeBuffer(status="sent", link=PERMALINK)
     monkeypatch.setattr(cp.bc, "create_post", fake.create_post)
     monkeypatch.setattr(cp.bc, "get_post", fake.get_post)
-    monkeypatch.setattr(cp, "verify_identity", lambda p, s: (True, "ok"))
+    monkeypatch.setattr(cp, "verify_identity", lambda *a, **k: (True, "ok"))
     cp.schedule_pass([make_row()], "chan", state, now=NOW)
     out = cp.comment_pass(state, poster=FakePoster(comment_ok=False),
                           ledger=ledger)
@@ -296,7 +296,7 @@ def test_a_comment_pass_rerun_retries_only_the_comment(state, monkeypatch,
     fake = FakeBuffer(status="sent", link=PERMALINK)
     monkeypatch.setattr(cp.bc, "create_post", fake.create_post)
     monkeypatch.setattr(cp.bc, "get_post", fake.get_post)
-    monkeypatch.setattr(cp, "verify_identity", lambda p, s: (True, "ok"))
+    monkeypatch.setattr(cp, "verify_identity", lambda *a, **k: (True, "ok"))
     cp.schedule_pass([make_row()], "chan", state, now=NOW)
     cp.comment_pass(state, poster=FakePoster(comment_ok=False), ledger=ledger)
     good = FakePoster()
@@ -313,7 +313,7 @@ def test_the_identity_guard_stops_every_comment_not_just_one(state, monkeypatch,
     monkeypatch.setattr(cp.bc, "create_post", fake.create_post)
     monkeypatch.setattr(cp.bc, "get_post", fake.get_post)
     monkeypatch.setattr(cp, "verify_identity",
-                        lambda p, s: (False, "logged in as the real account"))
+                        lambda *a, **k: (False, "logged in as the real account"))
     cp.schedule_pass([make_row(), make_row(post_text="second")], "chan", state,
                      now=NOW)
     poster = FakePoster()
@@ -328,7 +328,7 @@ def test_the_comment_pass_never_calls_create_post(state, monkeypatch, ledger):
     fake = FakeBuffer(status="sent", link=PERMALINK)
     monkeypatch.setattr(cp.bc, "create_post", fake.create_post)
     monkeypatch.setattr(cp.bc, "get_post", fake.get_post)
-    monkeypatch.setattr(cp, "verify_identity", lambda p, s: (True, "ok"))
+    monkeypatch.setattr(cp, "verify_identity", lambda *a, **k: (True, "ok"))
     cp.schedule_pass([make_row()], "chan", state, now=NOW)
     before = fake.n
     cp.comment_pass(state, poster=FakePoster(), ledger=ledger)

@@ -28,6 +28,7 @@ if it cannot, creating nothing. That is a good property: the row fails while a
 human can still fix it, rather than publishing a post without its picture.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -305,6 +306,32 @@ _SLOTS_TTL_SECONDS = 60
 _slots_cache = {}
 
 
+def _key_fingerprint(key=None):
+    """A short, non-reversible tag for the key a call will actually use.
+
+    Both caches used to key on ``channel_id`` ALONE. That is harmless with one
+    Buffer account and a cross-account leak with two: the same channel id under
+    a different key would be served the FIRST key's channel — and therefore the
+    first key's organizationId, and therefore the first account's slot count.
+    A feeder would then decide how many posts the other account could take
+    based on a number that was never about it.
+
+    The key itself is never used as a dict key: cache dicts get logged, repr'd
+    and dumped in tracebacks, and a credential must not ride along. A 12-hex
+    digest is ample to separate accounts and reveals nothing.
+
+    ``key=None`` means "whatever the environment holds", which is what
+    ``gql`` falls back to, so it is fingerprinted the same way and an explicit
+    key equal to the env one shares its bucket rather than duplicating it.
+    Read directly rather than through :func:`api_key` because a cache lookup
+    must not raise on an unset variable.
+    """
+    effective = (key or os.environ.get("BUFFER_API_KEY") or "").strip()
+    if not effective:
+        return "unset"
+    return hashlib.sha256(effective.encode("utf-8")).hexdigest()[:12]
+
+
 def clear_caches():
     """Drop cached channel/post reads. For tests and for a forced refresh."""
     _channel_cache.clear()
@@ -323,7 +350,8 @@ def get_channel(channel_id, key=None, session=None, max_age=None):
     import time as _time
 
     ttl = _CHANNEL_TTL_SECONDS if max_age is None else max_age
-    hit = _channel_cache.get(channel_id)
+    cache_key = (_key_fingerprint(key), channel_id)
+    hit = _channel_cache.get(cache_key)
     if hit and ttl and (_time.time() - hit[0]) < ttl:
         return hit[1]
 
@@ -332,7 +360,7 @@ def get_channel(channel_id, key=None, session=None, max_age=None):
     channel = (body.get("data") or {}).get("channel")
     if not channel:
         raise BufferError("Buffer returned no channel for id %r" % channel_id)
-    _channel_cache[channel_id] = (_time.time(), channel)
+    _channel_cache[cache_key] = (_time.time(), channel)
     return channel
 
 
@@ -366,7 +394,8 @@ def scheduled_slots(channel_id, key=None, session=None, max_age=None):
     import time as _time
 
     ttl = _SLOTS_TTL_SECONDS if max_age is None else max_age
-    hit = _slots_cache.get(channel_id)
+    cache_key = (_key_fingerprint(key), channel_id)
+    hit = _slots_cache.get(cache_key)
     if hit and ttl and (_time.time() - hit[0]) < ttl:
         return dict(hit[1])
 
@@ -395,7 +424,7 @@ def scheduled_slots(channel_id, key=None, session=None, max_age=None):
                if ((e.get("node") or {}).get("channelId")) == channel_id)
     result = {"limit": int(limit), "used": used, "used_this_channel": mine,
               "free": max(0, int(limit) - used)}
-    _slots_cache[channel_id] = (_time.time(), dict(result))
+    _slots_cache[cache_key] = (_time.time(), dict(result))
     return result
 
 

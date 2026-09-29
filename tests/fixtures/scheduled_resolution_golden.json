@@ -1,0 +1,44 @@
+{
+  "_api_key_source_env_var": "BUFFER_API_KEY",
+  "_captured_from": "pre-change code at commit 873252e",
+  "flat_blank": {
+    "channel_id": "",
+    "drain": {
+      "enabled": false,
+      "interval_minutes": 30
+    },
+    "identity_slug": ""
+  },
+  "flat_configured": {
+    "channel_id": "chan_linkedin_0001",
+    "drain": {
+      "enabled": true,
+      "interval_minutes": 300
+    },
+    "identity_slug": "example-person-one"
+  },
+  "flat_default": {
+    "channel_id": "",
+    "drain": {
+      "enabled": false,
+      "interval_minutes": 30
+    },
+    "identity_slug": ""
+  },
+  "flat_null": {
+    "channel_id": "",
+    "drain": {
+      "enabled": false,
+      "interval_minutes": 30
+    },
+    "identity_slug": ""
+  },
+  "flat_whitespace": {
+    "channel_id": "chan_ws",
+    "drain": {
+      "enabled": false,
+      "interval_minutes": 30
+    },
+    "identity_slug": "example-ws"
+  }
+}

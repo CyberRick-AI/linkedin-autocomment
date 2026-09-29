@@ -78,3 +78,74 @@ def test_the_suite_does_not_depend_on_an_ambient_key(var, monkeypatch):
     monkeypatch.delenv(var, raising=False)
     assert os.environ.get(var) is None
     # The fixture pins it again for the next test; nothing here leaks forward.
+
+
+# ─── Buffer: the same guarantee, for the other vendor ────────────────────────
+#
+# The key guards above stop a credential being SPENT. These stop a request being
+# SENT. Both were protection by coincidence until something checked.
+#
+# Eight tests in test_scheduled_ui.py really did reach api.buffer.com, through
+# the queue endpoint's poll-on-render reconcile, against the real configured
+# channel. Nothing failed, because `_reconcile` catches every exception so a
+# Buffer outage renders last-known state rather than an error page. The only
+# symptom was a line in api_usage.jsonl.
+
+def test_the_buffer_transport_is_replaced_for_every_test():
+    """The conftest guard must be in place, on any machine.
+
+    Deleting the fixture has to fail this, the same way deleting
+    `_dummy_api_keys` fails the key guards above.
+    """
+    from linkedin_automation import buffer_client
+
+    with pytest.raises(AssertionError) as exc:
+        buffer_client.requests.post("https://api.buffer.com/graphql", json={})
+    assert "hermetic" in str(exc.value)
+
+
+def test_a_buffer_call_without_an_injected_session_is_refused():
+    """End to end through gql, which is what every Buffer helper funnels into."""
+    from linkedin_automation import buffer_client
+
+    with pytest.raises(AssertionError):
+        buffer_client.gql("query { __typename }", key="dummy", label="probe")
+
+
+def test_an_injected_session_still_works():
+    """The guard must not break the tests that drive gql with a fake session.
+
+    test_buffer_client.py exercises status handling, retries and the usage log
+    that way and never touches the network; a guard that broke those would be
+    replacing real coverage with a false alarm.
+    """
+    from linkedin_automation import buffer_client
+
+    class _Session:
+        status_code = 200
+
+        def post(self, url, **kwargs):
+            return self
+
+        @staticmethod
+        def json():
+            return {"data": {"__typename": "Query"}}
+
+    body = buffer_client.gql("query { __typename }", key="dummy",
+                             label="probe", session=_Session())
+    assert body["data"]["__typename"] == "Query"
+
+
+def test_the_real_api_usage_log_is_never_written_by_a_test():
+    """`gql` logs BEFORE it sends, so even a REFUSED call appended a line.
+
+    api_usage.jsonl is a tracked project file and a record of real spend. A
+    test writing to it is both pollution and a misleading record of money that
+    was never spent.
+    """
+    from linkedin_automation import buffer_client
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    real = os.path.join(repo_root, "api_usage.jsonl")
+    assert os.path.abspath(buffer_client.USAGE_LOG) != os.path.abspath(real), (
+        "USAGE_LOG still points at the real api_usage.jsonl")

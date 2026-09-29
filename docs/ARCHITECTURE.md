@@ -657,6 +657,23 @@ silent pass and never as a failure. The gate flags are `requires_menu_open`,
   and the scheduler always pass it — both route every action through the same
   job bodies in `dashboard.py`, and that is production doing its job — so only
   an ad-hoc CLI/module run is ever refused.
+
+  X's Buffer write path has no browser and so never reaches `create_driver`,
+  which means it bypasses `check_production_guard` entirely — `verify_identity`
+  (above) checks it is the *right* channel, but nothing checked it was
+  *authorized to be a production one at all*. `profile_manager.
+  check_declared_production(identity_slug, context, allow_production=False)`
+  is the sibling for that path: same two rules, same env vars, same exception
+  and exit code, but it takes an already-resolved identity_slug (X's resolves
+  from `scheduled_posting.platforms.x.identity_slug`, not the flat field
+  LinkedIn profiles use) rather than a profile name. It is called from inside
+  `csv_pipeline.schedule_pass` — the one chokepoint every Buffer write passes
+  through — **before** `verify_identity`, so a declared-production identity
+  without authorization never reaches Buffer at all, not even for the identity
+  check's own request. Deliberately a separate function rather than a second
+  call into `check_production_guard`, so LinkedIn's guard and its exact-message
+  tests are untouched by a change on a path LinkedIn doesn't use. Rationale in
+  `.dev/DECISIONS.md`'s 2026-09-29 entry.
 - **Field naming.** `comment_fields.normalize_comment_fields` maps both historical
   conventions (`post_url`/`url`, `post_author`/`author`) to one canonical shape.
   Anything consuming a comment dict calls it.

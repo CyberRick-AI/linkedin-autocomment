@@ -1,0 +1,146 @@
+<!--
+  Synthetic X home timeline. Hand-authored, no live data.
+
+  Shaped from the FACTS proved by the live captures (see
+  .dev/AUDIT_x_harvest_state.md), not copied from them: the scrubbed dumps are
+  ~240KB of X's real markup and never enter the repo. Only the hooks the
+  selectors care about are reproduced here.
+
+  Satisfies every page="x_timeline" registry entry in
+  linkedin_automation/selector_health.py:
+    x_timeline_row       [data-testid='cellInnerDiv']        (min 3)
+    x_tweet_card         [data-testid='tweet']               (min 3)
+    x_tweet_text         [data-testid='tweetText']           (min 1)
+    x_tweet_author       [data-testid='User-Name']           (min 1)
+    x_tweet_permalink    a[href*='/status/']                 (min 1)
+    x_tweet_avatar       [data-testid='Tweet-User-Avatar']   (min 1)
+    x_overflow_menu      [data-testid='caret']               (min 1)
+    x_reply_button       [data-testid='reply']               (min 1)
+    x_like_button        [data-testid='like']                (min 1)
+    x_retweet_button     [data-testid='retweet']             (min 1)
+    x_scroll_container   [data-testid='primaryColumn']       (min 1)
+    x_new_tweet_button   [data-testid='SideNav_NewTweet_Button'] (min 1)
+    x_follow_button      [data-testid$='-follow']            (min 1)
+
+  TWO THINGS ARE DELIBERATE HERE.
+
+  1. Each card carries its permalink as a PLAIN ANCHOR, with the /analytics
+     variant beside it, exactly as the captures showed. Nothing has to be
+     clicked to reach a post's URL — the opposite of the LinkedIn feed, where
+     the permalink needs the overflow menu and the clipboard.
+
+  2. The inline composer (tweetTextarea_0) IS PRESENT on the timeline. That is
+     not a mistake: X mounts one here as well as on a status page, which is why
+     x_reply_editor is filed under page="x_status" and why a finder must scope
+     its composer lookup rather than assume a single document-wide match.
+     test_x_selector_registry.py pins this overlap.
+
+  Handles are synthetic (user1, user2, ...), status ids are all-9s, and the
+  follow-button ids are all-9s, so tools.x_dump.classify_testid reads every
+  data-testid here as structural or as an obviously-synthetic identity. The
+  fixture PII gate enforces that.
+-->
+<html>
+<head><title>Home / X</title></head>
+<body>
+<div id="react-root">
+
+  <header role="banner">
+    <nav aria-label="Primary">
+      <a data-testid="AppTabBar_Home_Link" href="/home">Home</a>
+      <a data-testid="AppTabBar_Explore_Link" href="/explore">Explore</a>
+      <a data-testid="SideNav_NewTweet_Button" href="/compose/post" role="button">Post</a>
+    </nav>
+  </header>
+
+  <div data-testid="primaryColumn">
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user1"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account One</span><span>@user1</span>
+        </div>
+        <a href="/user1/status/9999999999999990001"><time>1h</time></a>
+        <a href="/user1/status/9999999999999990001/analytics">View post analytics</a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">First synthetic post body. Nothing here came from a live timeline.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="1 Like. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user2"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account Two</span><span>@user2</span>
+        </div>
+        <a href="/user2/status/9999999999999990002"><time>3h</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">Second synthetic post body.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="2 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="0 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweet" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user3"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account Three</span><span>@user3</span>
+        </div>
+        <a href="/user3/status/9999999999999990003"><time>6h</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">Third synthetic post body.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="1 repost. Repost"></button>
+          <button data-testid="like" aria-label="4 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- The timeline's own inline composer. See note 2 in the header. -->
+    <div class="inline-composer">
+      <div data-testid="tweetTextarea_0RichTextInputContainer">
+        <div data-testid="tweetTextarea_0" contenteditable="true" role="textbox"></div>
+        <div data-testid="tweetTextarea_0_label">Post your reply</div>
+      </div>
+      <button data-testid="tweetButtonInline" role="button"><span>Reply</span></button>
+    </div>
+
+  </div>
+
+  <div data-testid="sidebarColumn">
+    <aside aria-label="Who to follow">
+      <div data-testid="UserCell">
+        <div data-testid="User-Name"><span>Synthetic Account Four</span><span>@user4</span></div>
+        <button data-testid="9999999991-follow" aria-label="Follow @user4">Follow</button>
+      </div>
+      <div data-testid="UserCell">
+        <div data-testid="User-Name"><span>Synthetic Account Five</span><span>@user5</span></div>
+        <button data-testid="9999999992-follow" aria-label="Follow @user5">Follow</button>
+      </div>
+    </aside>
+    <section data-testid="trend"><span>Synthetic trend</span></section>
+  </div>
+
+</div>
+</body>
+</html>

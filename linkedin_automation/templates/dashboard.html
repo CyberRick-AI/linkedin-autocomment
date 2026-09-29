@@ -1522,6 +1522,16 @@ header {
           <div class="panel-subtitle" id="schpIdentityLine">Loading…</div>
         </div>
         <div style="text-align:right">
+          <!-- The platform this whole section acts on. Every call it makes
+               carries this, and switching re-reads the queue - the two
+               platforms are separate stores and separate Buffer accounts, so
+               a stale table beside a switched header would be a lie. -->
+          <div style="display:flex;gap:0.35rem;justify-content:flex-end;margin-bottom:0.35rem">
+            <button class="schp-plat" data-plat="linkedin" onclick="schpSetPlatform('linkedin')"
+                    style="padding:0.25rem 0.7rem;border-radius:999px;font-size:0.75rem;cursor:pointer;border:1px solid var(--border)">LinkedIn</button>
+            <button class="schp-plat" data-plat="x" onclick="schpSetPlatform('x')"
+                    style="padding:0.25rem 0.7rem;border-radius:999px;font-size:0.75rem;cursor:pointer;border:1px solid var(--border)">X</button>
+          </div>
           <div style="font-size:0.75rem;color:var(--text-dim)">Queue &amp; scheduling</div>
           <div style="font-size:0.72rem;color:var(--text-dim)" id="schpStateFile"></div>
         </div>
@@ -2774,6 +2784,42 @@ const SCHP_BADGE = {
   failed:         {bg: 'rgba(255,90,90,0.16)',   fg: '#ff8080'}
 };
 
+// The platform the scheduled-posting section is acting on. LinkedIn by
+// default, so nothing about the existing section changes until someone
+// switches. Every request this section makes carries it.
+let schpPlatform = 'linkedin';
+
+// Whether the selected platform has a first-comment step. The SERVER decides
+// this (the queue payload's `first_comment`), so the UI cannot drift from what
+// the pipeline actually does: on X the link rides in the post body and there is
+// no comment step and no browser.
+let schpFirstComment = true;
+
+function schpQ(url) {
+  // Every read carries the platform, so the queue, the preflight and the
+  // reconcile all answer for the SAME account the header names.
+  return url + (url.indexOf('?') === -1 ? '?' : '&') +
+    'platform=' + encodeURIComponent(schpPlatform);
+}
+
+function schpSetPlatform(p) {
+  if (p === schpPlatform) return;
+  schpPlatform = p;
+  schpPaintPlatform();
+  // Re-read rather than re-render: the two platforms are separate stores, so
+  // the rows on screen belong to the other account until this returns.
+  loadScheduledQueue();
+}
+
+function schpPaintPlatform() {
+  document.querySelectorAll('.schp-plat').forEach(b => {
+    const on = b.dataset.plat === schpPlatform;
+    b.style.background = on ? 'var(--accent, #2b6cb0)' : 'transparent';
+    b.style.color = on ? '#fff' : 'var(--text-dim)';
+    b.style.fontWeight = on ? '600' : '400';
+  });
+}
+
 function schpEsc(v) {
   return String(v === null || v === undefined ? '' : v)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -2812,8 +2858,11 @@ async function schpDeleteRow(key, hasPost, postId) {
   } else if (!confirm('Remove this row from the queue?')) {
     return;
   }
-  const url = `/api/scheduled/${currentProfile}/rows/${encodeURIComponent(key)}` +
-              (hasPost ? '?confirm_live=1' : '');
+  // schpQ already added a query string, so this joins with & - two '?'
+  // would make confirm_live part of the platform value and silently
+  // lose the confirmation.
+  const url = schpQ(`/api/scheduled/${currentProfile}/rows/${encodeURIComponent(key)}`) +
+              (hasPost ? '&confirm_live=1' : '');
   const res = await fetch(url, {method: 'DELETE'});
   const d = await res.json();
   if (!res.ok) {
@@ -3005,7 +3054,7 @@ function schpReport(d) {
 }
 
 async function schpPostRows(payload) {
-  const res = await fetch(`/api/scheduled/${currentProfile}/rows`, payload);
+  const res = await fetch(schpQ(`/api/scheduled/${currentProfile}/rows`), payload);
   const d = await res.json();
   if (!res.ok) {
     document.getElementById('schpAddResult').innerHTML =
@@ -3063,7 +3112,8 @@ async function schpSchedule() {
 
   let pre;
   try {
-    const res = await fetch(`/api/scheduled/${currentProfile}/schedule/preflight`);
+    const res = await fetch(
+      schpQ(`/api/scheduled/${currentProfile}/schedule/preflight`));
     pre = await res.json();
   } catch (e) {
     out.innerHTML = '<div style="color:#ff8080">' + schpEsc(e.message) + '</div>';
@@ -3109,7 +3159,7 @@ async function schpSchedule() {
   btn.disabled = true;
   btn.textContent = 'Scheduling…';
   try {
-    const res = await fetch(`/api/scheduled/${currentProfile}/schedule`,
+    const res = await fetch(schpQ(`/api/scheduled/${currentProfile}/schedule`),
                             {method: 'POST'});
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'schedule failed');
@@ -3160,25 +3210,41 @@ async function loadScheduledQueue() {
   const box = document.getElementById('schpQueue');
   box.innerHTML = '<div style="color:var(--text-dim)">Loading…</div>';
   try {
-    const res = await fetch(`/api/scheduled/${currentProfile}/queue`);
+    const res = await fetch(schpQ(`/api/scheduled/${currentProfile}/queue`));
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'failed to load the queue');
+
+    // The server decides the platform and whether it has a comment step, so a
+    // stale local value cannot make the UI describe the wrong pipeline.
+    schpPlatform = d.platform || 'linkedin';
+    schpFirstComment = (d.first_comment !== false);
+    schpPaintPlatform();
 
     // Identity, always visible - this section acts on a real account.
     const idLine = document.getElementById('schpIdentityLine');
     const warn = document.getElementById('schpConfigWarn');
+    const platLabel = schpPlatform === 'x' ? 'X' : 'LinkedIn';
     if (d.config.identity_configured) {
-      idLine.innerHTML = 'Acts as <strong style="color:#7fd0ff">' +
-        schpEsc(d.config.identity_slug) + '</strong>' +
+      idLine.innerHTML = 'On <strong>' + schpEsc(platLabel) + '</strong>, acts as ' +
+        '<strong style="color:#7fd0ff">' + schpEsc(d.config.identity_slug) +
+        '</strong>' +
         (d.config.buffer_channel_id
           ? ' · Buffer channel ' + schpEsc(d.config.buffer_channel_id) : '');
       warn.style.display = 'none';
     } else {
-      idLine.innerHTML = '<span style="color:#ffcc66">No identity configured</span>';
+      // Fail-closed, and SAID so. A blank header would look like "nothing set
+      // yet"; the guard will actually refuse to schedule, and that is worth
+      // knowing before the button is pressed rather than after.
+      idLine.innerHTML = '<span style="color:#ffcc66">' + schpEsc(platLabel) +
+        ' — no identity configured</span>';
       warn.style.display = 'block';
-      warn.innerHTML = 'Set <code>scheduled_posting.identity_slug</code> in this ' +
-        'profile\'s config before anything can post or comment. Until it is set, ' +
-        'the comment sweep cannot be enabled — there would be no identity to enforce.';
+      warn.innerHTML = schpEsc(d.config.problem ||
+        (platLabel + ' is not configured — scheduling will refuse.')) +
+        '<br>Set <code>scheduled_posting' +
+        (schpPlatform === 'linkedin' ? '' : '.platforms.' + schpEsc(schpPlatform)) +
+        '.identity_slug</code> and <code>buffer_channel_id</code> in this ' +
+        'profile\'s config. Until they are set, the identity guard refuses the ' +
+        'run rather than posting to an unverified account.';
     }
     document.getElementById('schpStateFile').textContent = d.state_file || '';
 

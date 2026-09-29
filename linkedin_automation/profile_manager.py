@@ -394,6 +394,125 @@ def reset_profile_config(profile_name: str = None) -> Dict:
     return default
 
 
+# ─── Scheduled-posting settings, per (profile, platform) ─────────────────────
+#
+# ONE resolver, so there is one answer to "which channel, which key, which
+# identity". Before this there were two independent sources — the dashboard read
+# the flat config and tools/run_scheduled_posts.py took them as CLI arguments —
+# and two sources are two chances to post to the wrong account.
+#
+# The shape is deliberately backward-compatible. A profile's flat
+# `scheduled_posting` fields ARE the LinkedIn settings; they did not move, so
+# nothing migrates and LinkedIn's resolution is the expression it always was.
+# Another platform gets an entry under `scheduled_posting.platforms.<name>`.
+
+#: The platform whose settings live in the flat fields, for historical reasons.
+SCHEDULED_DEFAULT_PLATFORM = "linkedin"
+
+#: Where LinkedIn's Buffer key comes from. Matches buffer_client.api_key(), and
+#: is the fallback recorded in the resolved dict so a caller can say which
+#: variable it wanted if the key turns out to be missing.
+SCHEDULED_DEFAULT_KEY_ENV = "BUFFER_API_KEY"
+
+
+class ScheduledConfigError(RuntimeError):
+    """A (profile, platform) cannot be resolved into usable settings."""
+
+
+def resolve_scheduled(profile_name: str = None,
+                      platform: str = SCHEDULED_DEFAULT_PLATFORM,
+                      env=None) -> Dict:
+    """Resolve the scheduled-posting settings for one ``(profile, platform)``.
+
+    Returns ``{platform, api_key, api_key_env, channel_id, identity_slug,
+    drain}``.
+
+    **LinkedIn resolves exactly as it did before this function existed.** Its
+    settings are the flat `scheduled_posting` fields, read with the same
+    ``(x or "").strip()`` expressions the dashboard used, and its key is the
+    bare ``BUFFER_API_KEY``. `tests/fixtures/scheduled_resolution_golden.json`
+    is a snapshot taken from the pre-change code and is asserted against, so a
+    drift here fails rather than being argued about.
+
+    **The key is resolved but NOT required.** For LinkedIn a missing
+    ``BUFFER_API_KEY`` yields ``api_key=None`` rather than raising, because the
+    pre-change ``_scheduled_channel_id`` never touched the key and asking for a
+    channel id must not start failing on an unrelated variable. A caller that
+    needs the key passes it to ``buffer_client``, whose ``key or api_key()``
+    fallback raises the message it always did.
+
+    **An overlaid platform is stricter, because it has no fallback.** Its key
+    comes from the environment variable its overlay NAMES
+    (``buffer_api_key_env``), and a missing or blank one raises here, naming the
+    variable — there is no bare default to silently land on.
+
+    **An unknown platform raises rather than falling back to the flat fields.**
+    Returning LinkedIn's channel for ``platform="x"`` because of a typo would
+    publish X content to LinkedIn. That failure is unrecoverable and silent,
+    which is the worst combination, so a platform that is not LinkedIn and has
+    no overlay is an error.
+    """
+    env = os.environ if env is None else env
+    platform = (platform or SCHEDULED_DEFAULT_PLATFORM).strip().lower()
+
+    section = (get_profile_config(profile_name) or {}).get("scheduled_posting")
+    section = section if isinstance(section, dict) else {}
+    overlays = section.get("platforms")
+    overlays = overlays if isinstance(overlays, dict) else {}
+    overlay = overlays.get(platform)
+
+    if platform == SCHEDULED_DEFAULT_PLATFORM:
+        # The legacy path, unchanged. Note it reads the FLAT fields even if a
+        # "linkedin" overlay were added later: moving LinkedIn under the
+        # overlay is a migration, and this function does not perform one.
+        return {
+            "platform": platform,
+            "api_key": (env.get(SCHEDULED_DEFAULT_KEY_ENV) or "").strip() or None,
+            "api_key_env": SCHEDULED_DEFAULT_KEY_ENV,
+            "channel_id": (section.get("buffer_channel_id") or "").strip(),
+            "identity_slug": (section.get("identity_slug") or "").strip(),
+            "drain": section.get("drain"),
+        }
+
+    if not isinstance(overlay, dict):
+        raise ScheduledConfigError(
+            "profile %r has no scheduled_posting.platforms.%s section, so there "
+            "are no %s settings to use. Refusing to fall back to the flat "
+            "fields: those are LinkedIn's, and using them here would publish to "
+            "LinkedIn. Known platforms: %s"
+            % (profile_name or get_default_profile_name(), platform, platform,
+               ", ".join(sorted([SCHEDULED_DEFAULT_PLATFORM] + list(overlays)))))
+
+    key_env = (overlay.get("buffer_api_key_env") or "").strip()
+    if not key_env:
+        raise ScheduledConfigError(
+            "scheduled_posting.platforms.%s has no buffer_api_key_env, so there "
+            "is no way to know which environment variable holds this account's "
+            "Buffer key. Set it (e.g. BUFFER_API_KEY_%s)."
+            % (platform, platform.upper()))
+
+    api_key = (env.get(key_env) or "").strip()
+    if not api_key:
+        raise ScheduledConfigError(
+            "%s is not set (or is empty), so the Buffer key for platform %r on "
+            "profile %r cannot be resolved. Add it to .env — it is never "
+            "committed — or change scheduled_posting.platforms.%s."
+            "buffer_api_key_env to name the variable that holds it."
+            % (key_env, platform, profile_name or get_default_profile_name(),
+               platform))
+
+    return {
+        "platform": platform,
+        "api_key": api_key,
+        "api_key_env": key_env,
+        "channel_id": (overlay.get("buffer_channel_id") or "").strip(),
+        "identity_slug": (overlay.get("identity_slug") or "").strip(),
+        # Falls back to the flat drain so a platform that does not override it
+        # still gets a usable dict rather than None.
+        "drain": overlay.get("drain", section.get("drain")),
+    }
+
+
 # ─── Auto-migrate from .env ──────────────────────────────────────────────────
 
 def auto_migrate_from_env():
@@ -430,12 +549,20 @@ ALLOW_PRODUCTION_ENV = "LINKEDIN_ALLOW_PRODUCTION"
 
 
 def get_production_identity_slugs() -> set:
-    """The identity_slugs declared as the real, production LinkedIn account(s).
+    """The identity_slugs declared as the real, production account(s) - any
+    platform, since this list is shared across all of them (see
+    docs/ARCHITECTURE.md §9 and .dev/DECISIONS.md's 2026-09-29 entry).
+
+    A leading ``@`` is stripped so ``@AI_Fun_times`` and ``AI_Fun_times``
+    declare the same identity - matching csv_pipeline.verify_channel_identity,
+    which does the same normalization on the OTHER side of this exact
+    comparison (check_declared_production). LinkedIn slugs never carry a
+    leading ``@``, so this is a no-op for every existing declaration.
 
     Never inferred from a profile name - see ProductionAccessRefused.
     """
     raw = os.environ.get(PRODUCTION_IDENTITY_SLUGS_ENV, "")
-    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+    return {s.strip().lstrip("@").lower() for s in raw.split(",") if s.strip()}
 
 
 def get_identity_slug(profile_name: str) -> str:
@@ -484,6 +611,57 @@ def check_production_guard(profile_name: str, allow_production: bool = False) ->
             f"Refusing to drive a browser for profile '{profile_name}': its "
             f"identity_slug '{identity_slug}' is a declared PRODUCTION "
             f"identity. Pass --allow-production (or set "
+            f"{ALLOW_PRODUCTION_ENV}=1) to proceed."
+        )
+
+
+def check_declared_production(identity_slug: str, context: str,
+                               allow_production: bool = False) -> None:
+    """The declared-production model, for a write path that never touches
+    ``create_driver`` - e.g. X's Buffer posting, which has no browser and so
+    cannot be gated by ``check_production_guard``.
+
+    Same two rules as ``check_production_guard``, same env vars
+    (``PRODUCTION_IDENTITY_SLUGS``, ``LINKEDIN_ALLOW_PRODUCTION``), same
+    exception and exit code - but takes an already-resolved ``identity_slug``
+    directly rather than a profile name, since a non-LinkedIn platform's
+    identity resolves from its own config path (e.g.
+    ``scheduled_posting.platforms.x.identity_slug``), not the flat
+    ``get_identity_slug`` LinkedIn profiles use. ``context`` names the action
+    being refused (e.g. "schedule a Buffer post on x") for the message.
+
+    Deliberately NOT a code path inside ``check_production_guard`` or
+    ``create_driver`` - this guards a write that has no browser at all, so
+    routing it through the browser chokepoint is not an option, and this
+    function must never be called from ``create_driver`` (LinkedIn's guard
+    stays exactly as it is).
+
+    Raises ProductionAccessRefused. An identity that resolves to NOTHING is a
+    refusal, not a pass - unknown is not the same as known-non-production, and
+    that holds with or without ``allow_production``.
+    """
+    allow_production = allow_production or _allow_production_from_env()
+
+    # Normalized the same way csv_pipeline.verify_channel_identity normalizes
+    # the identity it compares against a live Buffer channel - "@AI_Fun_times"
+    # and "AI_Fun_times" must be the SAME declared identity on both sides of
+    # this guard, or a slug written with a leading '@' here (natural for an X
+    # handle) silently never matches an entry in PRODUCTION_IDENTITY_SLUGS
+    # (also normalized, see get_production_identity_slugs), and a declared-
+    # production account schedules unrefused.
+    normalized = (identity_slug or "").strip().lstrip("@").lower()
+
+    if not normalized:
+        raise ProductionAccessRefused(
+            f"Refusing to {context}: no declared identity. An unresolved "
+            f"identity is not assumed safe - declare an identity_slug before "
+            f"running against it."
+        )
+
+    if normalized in get_production_identity_slugs() and not allow_production:
+        raise ProductionAccessRefused(
+            f"Refusing to {context}: identity '{identity_slug}' is a "
+            f"declared PRODUCTION identity. Pass --allow-production (or set "
             f"{ALLOW_PRODUCTION_ENV}=1) to proceed."
         )
 

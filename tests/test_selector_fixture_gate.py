@@ -182,6 +182,25 @@ def test_no_fixture_contains_personally_identifying_data(path):
     # No email addresses.
     assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", html), f"{path}: contains an email"
 
+    # Identity hiding INSIDE an attribute value, not just in the text. X embeds
+    # real handles in data-testid (``UserAvatar-Container-<handle>``), which
+    # matches none of the checks above — no '@', no email, no long digit run. An
+    # X fixture carrying a dozen real handles would have passed this guard
+    # unchanged, so it delegates to the same classifier the dump scrubber uses.
+    from tools import x_dump
+
+    for value in re.findall(r'data-testid="([^"]+)"', html):
+        status, stem = x_dump.classify_testid(value)
+        if status == "handle_stem":
+            tail = value[len(stem):] if not stem.startswith("-") else value[:-len(stem)]
+            assert re.fullmatch(r"user\d+|9\d*|example-[\w-]+", tail), (
+                f"{path}: data-testid {value!r} carries a real-looking identifier"
+            )
+        else:
+            assert status != "embedded_id", (
+                f"{path}: data-testid {value!r} embeds a real-looking id"
+            )
+
 
 # ─── A renamed hook inside a REACHABLE state must fail, not be excused ────────
 #

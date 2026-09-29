@@ -180,6 +180,17 @@
     "drain": {
       "enabled": false,
       "interval_minutes": 30
+    },
+    "platforms": {
+      "x": {
+        "buffer_api_key_env": "BUFFER_API_KEY_X",
+        "buffer_channel_id": "",
+        "identity_slug": "",
+        "drain": {
+          "enabled": false,
+          "interval_minutes": 300
+        }
+      }
     }
   }
 }

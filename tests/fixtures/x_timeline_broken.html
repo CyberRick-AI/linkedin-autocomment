@@ -1,0 +1,127 @@
+<!--
+  Synthetic X home timeline with the CARD CONTAINER RENAMED. Hand-authored.
+
+  Exactly ONE thing differs from x_timeline_healthy.html:
+
+      [data-testid='tweet']   ->   [data-testid='tweetCard']
+
+  ...on all three cards. Everything else — the rows, the text, the author
+  blocks, the permalinks, the action row — is untouched and still matches.
+
+  Expected result: BROKEN, because x_tweet_card is critical.
+
+  This is the shape of every real selector break this project has seen, and the
+  one the July 2026 LinkedIn breakage took: a hook is renamed, nothing raises,
+  and the code simply finds nothing. The point of the fixture is that the gate
+  must SAY so. A rename that produced DEGRADED, or that the report omitted
+  entirely, would be the false all-clear the watchdog exists to prevent.
+
+  Note what does NOT break with it: x_timeline_row still counts 3, and
+  x_tweet_permalink still counts its anchors, because X's permalinks do not
+  live inside the card hook. A report that failed everything at once would be
+  hiding which selector actually died.
+-->
+<html>
+<head><title>Home / X</title></head>
+<body>
+<div id="react-root">
+
+  <header role="banner">
+    <nav aria-label="Primary">
+      <a data-testid="AppTabBar_Home_Link" href="/home">Home</a>
+      <a data-testid="AppTabBar_Explore_Link" href="/explore">Explore</a>
+      <a data-testid="SideNav_NewTweet_Button" href="/compose/post" role="button">Post</a>
+    </nav>
+  </header>
+
+  <div data-testid="primaryColumn">
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweetCard" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user1"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account One</span><span>@user1</span>
+        </div>
+        <a href="/user1/status/9999999999999990001"><time>1h</time></a>
+        <a href="/user1/status/9999999999999990001/analytics">View post analytics</a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">First synthetic post body. Nothing here came from a live timeline.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="1 Like. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweetCard" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user2"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account Two</span><span>@user2</span>
+        </div>
+        <a href="/user2/status/9999999999999990002"><time>3h</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">Second synthetic post body.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="2 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="0 reposts. Repost"></button>
+          <button data-testid="like" aria-label="0 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <div data-testid="cellInnerDiv">
+      <article data-testid="tweetCard" tabindex="0">
+        <div data-testid="Tweet-User-Avatar">
+          <a href="/user3"><img alt=""></a>
+        </div>
+        <div data-testid="User-Name">
+          <span>Synthetic Account Three</span><span>@user3</span>
+        </div>
+        <a href="/user3/status/9999999999999990003"><time>6h</time></a>
+        <button data-testid="caret" aria-label="More">&#183;&#183;&#183;</button>
+        <div data-testid="tweetText">Third synthetic post body.</div>
+        <div role="group">
+          <button data-testid="reply" aria-label="0 Replies. Reply"></button>
+          <button data-testid="retweet" aria-label="1 repost. Repost"></button>
+          <button data-testid="like" aria-label="4 Likes. Like"></button>
+          <button data-testid="bookmark" aria-label="Bookmark"></button>
+        </div>
+      </article>
+    </div>
+
+    <!-- The timeline's own inline composer. See note 2 in the header. -->
+    <div class="inline-composer">
+      <div data-testid="tweetTextarea_0RichTextInputContainer">
+        <div data-testid="tweetTextarea_0" contenteditable="true" role="textbox"></div>
+        <div data-testid="tweetTextarea_0_label">Post your reply</div>
+      </div>
+      <button data-testid="tweetButtonInline" role="button"><span>Reply</span></button>
+    </div>
+
+  </div>
+
+  <div data-testid="sidebarColumn">
+    <aside aria-label="Who to follow">
+      <div data-testid="UserCell">
+        <div data-testid="User-Name"><span>Synthetic Account Four</span><span>@user4</span></div>
+        <button data-testid="9999999991-follow" aria-label="Follow @user4">Follow</button>
+      </div>
+      <div data-testid="UserCell">
+        <div data-testid="User-Name"><span>Synthetic Account Five</span><span>@user5</span></div>
+        <button data-testid="9999999992-follow" aria-label="Follow @user5">Follow</button>
+      </div>
+    </aside>
+    <section data-testid="trend"><span>Synthetic trend</span></section>
+  </div>
+
+</div>
+</body>
+</html>

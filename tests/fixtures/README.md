@@ -62,3 +62,71 @@ Rules 2–4 are enforced by
 `test_selector_fixture_gate.py::test_no_fixture_contains_personally_identifying_data`,
 which runs over every `*.html` here. A fixture captured by copy-paste from a live
 session trips it rather than landing in the repo.
+
+## X fixtures
+
+Same rules, same reasoning, a different site. Driven by
+`tests/test_x_selector_registry.py` against the `page="x_*"` entries in
+`linkedin_automation/selector_health.py`, which pull their selectors from
+`linkedin_automation/x_selectors.py`.
+
+| File | Page | Expected result |
+|---|---|---|
+| `x_timeline_healthy.html` | x_timeline | `HEALTHY` — every timeline entry matches |
+| `x_timeline_broken.html` | x_timeline | `BROKEN` — the critical card container renamed |
+| `x_status_healthy.html` | x_status | `HEALTHY` — permalink page, composer present on load |
+| `x_search_healthy.html` | x_search | `HEALTHY` — same cards as the timeline, plus search chrome |
+| `x_timeline_mixed.html` | (finder only) | not a gate fixture — the awkward real shapes, see below |
+
+These are **shaped from** the live captures, never copied from them. The four
+scrubbed dumps live in `data/<profile>/x_spike/` (gitignored, machine-local) and
+are ~240KB of X's real markup; what crosses into the repo is only the hooks the
+selectors care about, re-authored by hand. Rule 1 above applies unchanged.
+
+Three X-specific conventions, so the PII gate passes by construction:
+
+1. Handles are `user1`, `user2`, … — the same synthetic form `x_dump`'s scrubber
+   produces, so `UserAvatar-Container-user1` classifies as an obviously-fake
+   identity rather than a real one.
+2. Status ids are all 9s (`9999999999999990001`), like the scrubber's output.
+3. Follow buttons are `<all-9s>-follow`, because X puts the account id *in* the
+   testid and the gate checks the tail.
+
+`test_no_fixture_contains_personally_identifying_data` enforces all three by
+running every `data-testid` here through `tools.x_dump.classify_testid` — the
+same classifier the dump scrubber uses, so a fixture pasted from a live X
+session trips it rather than landing in the repo.
+
+### Two things these fixtures deliberately encode
+
+**The permalink is a plain anchor.** Each card carries `/…/status/…` as an
+ordinary href, with the `/analytics` variant beside it. LinkedIn needs the
+overflow menu opened and the clipboard read; X needs neither, so there is no
+menu-gated X entry and no X equivalent of `copy_link_item`.
+
+**The composer is on screen before anything is clicked.** The harvest dumped a
+status page twice — as loaded, and after clicking the reply box — and both held
+identical structural testids. So no X entry is gated, and `x_status_healthy.html`
+shows the editor and submit button at page load. `tweetTextarea_0` also appears
+in `x_timeline_healthy.html`, which is not a mistake: X mounts an inline composer
+on the timeline too, and that overlap is exactly why the reply editor is filed
+under `page="x_status"` and must be scoped rather than looked up document-wide.
+
+### `x_timeline_mixed.html` — the shapes the captures actually held
+
+The gate fixtures above are clean cases. This one is for the **finder**
+(`tests/test_x_finder.py`) and is not checked by the selector gate. Every card
+in it reproduces something found by parsing the four real scrubbed dumps:
+
+| Card | Shape | Why it matters |
+|---|---|---|
+| A | permalink with `/analytics` **and** `/photo/1` siblings | either sibling, taken as the URL, writes a store key the poster cannot navigate back to |
+| B | a quote tweet — two `User-Name`, two `<time>`, one `tweetText` | cards nest (3 of 5 cards in the timeline capture); every per-card lookup must take the FIRST match or it reads the quoted account as the author |
+| C | a paid ad: external `utm_medium=paid_social_media` link, no `<time>`, no canonical permalink | exactly one card in the capture had this shape; it cannot be addressed, so the finder skips it |
+| D | `/i/status/<id>` | `i` is one of X's own routes, not a handle — addressable, but with no account in the URL |
+| E | a re-render of card A, same permalink | X repeats a card across rows, so counting rows double-counts |
+
+Expected: three posts parsed (A, B, D). C is skipped, E collapses into A.
+
+Counts are written in X's real phrasing, singular forms included (`1 Reply.
+Reply`, `1 repost. Repost`), because that is what the captures held.

@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from .comment_fields import normalize_comment_fields, comments_to_txt
 # Profile manager calls load_dotenv() on import; importing it here (before our
 # own load_dotenv) is intentional and order-independent.
+from . import platform_policy
 from . import profile_manager as pm
 from . import post_store
 from . import scheduler as scheduler_mod
@@ -1342,15 +1343,84 @@ def _scheduled_row_view(key, rec):
     }
 
 
+def _req_platform():
+    """Which platform this request is about. LinkedIn unless asked otherwise.
+
+    Read from the query string for GETs and the JSON body for POSTs, so every
+    route in the section takes it the same way. An UNKNOWN value is rejected
+    rather than passed through: `resolve_scheduled` refuses an unknown platform
+    (it will not fall back to LinkedIn's channel), and a 400 here says so in
+    one place instead of surfacing as a 500 from six routes.
+    """
+    raw_value = request.args.get("platform")
+    if raw_value is None and request.method in ("POST", "DELETE"):
+        raw_value = (request.get_json(silent=True) or {}).get("platform")
+    platform = str(raw_value or pm.SCHEDULED_DEFAULT_PLATFORM).strip().lower()
+    if platform not in platform_policy.PLATFORMS:
+        raise ValueError("unknown platform %r - known: %s"
+                         % (platform, ", ".join(sorted(platform_policy.PLATFORMS))))
+    return platform
+
+
+def _scheduled_account(profile_name, platform):
+    """Who this (profile, platform) is about to post AS, without a Buffer call.
+
+    The acting-account header. It reports the CONFIGURED identity rather than
+    asking Buffer for the channel's real handle, for two reasons: the queue is
+    re-fetched on every tab switch and after every action, so a request here
+    would be spent constantly against a ~100/day budget; and the configured
+    slug is what the Phase 3 guard compares against, so it is the value that
+    decides whether a schedule will go through.
+
+    The ACTUAL handle Buffer reports still appears in the preflight dialog,
+    which is the moment before anything is created and the place a stale or
+    wrong channel must be caught.
+
+    An unconfigured platform reports its fail-closed state rather than a blank,
+    so the refusal is visible BEFORE the button is pressed.
+    """
+    try:
+        resolved = pm.resolve_scheduled(profile_name, platform)
+    except pm.ScheduledConfigError as exc:
+        return {"platform": platform, "configured": False,
+                "identity_slug": None, "channel_id": None,
+                "problem": str(exc)}
+
+    channel_id = (resolved.get("channel_id") or "").strip()
+    slug = (resolved.get("identity_slug") or "").strip()
+
+    missing = []
+    if not channel_id:
+        missing.append("no Buffer channel")
+    # The identity guard only runs for non-default platforms (LinkedIn's
+    # schedule path is deliberately ungated - see .dev/BACKLOG.md), so a blank
+    # slug is only a scheduling blocker off LinkedIn.
+    if not slug and platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        missing.append("no identity_slug")
+
+    problem = None
+    if missing:
+        problem = ("%s not configured (%s) - scheduling will refuse"
+                   % (platform, ", ".join(missing)))
+
+    return {"platform": platform, "configured": not missing,
+            "identity_slug": slug or None, "channel_id": channel_id or None,
+            "problem": problem}
+
+
 #: Poll-on-render must not become poll-on-every-keystroke. The queue view is
 #: re-fetched on tab switches and after every action, and Buffer's free plan
 #: allows about a hundred requests a DAY, so the reconcile is shared by every
 #: render inside this window.
 _RECONCILE_TTL_SECONDS = 120
-_reconcile_cache = {}   # profile -> {"at": epoch, "changed": [...], "error": str|None}
+# Keyed on (profile, PLATFORM): two platforms are two Buffer accounts with
+# their own posts, so sharing a cache entry would let an X render be answered
+# by LinkedIn's reconcile and vice versa.
+_reconcile_cache = {}   # (profile, platform) -> {"at", "changed", "error"}
 
 
-def _reconcile_on_render(profile_name, force=False):
+def _reconcile_on_render(profile_name, force=False,
+                         platform=None):
     """Bring SCHEDULED rows up to date with what Buffer actually did.
 
     Runs when the queue is rendered, so the view tells the truth without
@@ -1363,32 +1433,44 @@ def _reconcile_on_render(profile_name, force=False):
     """
     import time as _time
 
-    channel_id = _scheduled_channel_id(profile_name)
+    platform = platform or pm.SCHEDULED_DEFAULT_PLATFORM
+    try:
+        resolved = pm.resolve_scheduled(profile_name, platform)
+    except pm.ScheduledConfigError as exc:
+        return {"ran": False, "changed": [], "error": None, "note": str(exc)}
+
+    channel_id = (resolved.get("channel_id") or "").strip()
     if not channel_id:
         return {"ran": False, "changed": [], "error": None,
                 "note": "no Buffer channel configured"}
 
-    cached = _reconcile_cache.get(profile_name)
+    cache_key = (profile_name, platform)
+    cached = _reconcile_cache.get(cache_key)
     if not force and cached and (_time.time() - cached["at"]) < _RECONCILE_TTL_SECONDS:
         return {"ran": False, "changed": cached["changed"],
                 "error": cached["error"], "note": "cached",
                 "age_seconds": int(_time.time() - cached["at"])}
 
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
     # Cheapest possible early exit: if nothing is awaiting publication there is
     # nothing Buffer can tell us, so do not spend a request finding that out.
     if not [v for v in state.rows.values()
             if v.get("status") in csv_pipeline.RECONCILABLE_STATES
             and v.get("post_id")]:
-        _reconcile_cache[profile_name] = {"at": _time.time(), "changed": [],
-                                          "error": None}
+        _reconcile_cache[cache_key] = {"at": _time.time(), "changed": [],
+                                       "error": None}
         return {"ran": False, "changed": [], "error": None,
                 "note": "nothing awaiting publication"}
 
     error = None
     changed = []
     try:
-        changed = csv_pipeline.reconcile_published(state, channel_id)
+        # platform= is what makes X ask Buffer about `error` as well as
+        # `sent`, so a post that failed to publish shows as FAILED instead of
+        # sitting on SCHEDULED forever. LinkedIn's query is unchanged.
+        changed = csv_pipeline.reconcile_published(
+            state, channel_id, key=resolved.get("api_key"), platform=platform)
     except buffer_client.BufferRateLimited as exc:
         error = str(exc)
         logger.warning("Reconcile skipped for %s: %s", profile_name, exc)
@@ -1396,15 +1478,20 @@ def _reconcile_on_render(profile_name, force=False):
         error = "Could not reach Buffer to check for published posts: %s" % exc
         logger.warning("Reconcile failed for %s: %s", profile_name, exc)
 
-    _reconcile_cache[profile_name] = {"at": _time.time(), "changed": changed,
-                                      "error": error}
+    _reconcile_cache[cache_key] = {"at": _time.time(), "changed": changed,
+                                   "error": error}
     return {"ran": True, "changed": changed, "error": error, "note": None}
 
 
 @app.route('/api/scheduled/<profile_name>/reconcile', methods=['POST'])
 def scheduled_reconcile(profile_name):
     """POST - force a reconcile now, ignoring the render cache."""
-    return jsonify(_reconcile_on_render(profile_name, force=True))
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_reconcile_on_render(profile_name, force=True,
+                                        platform=platform))
 
 
 @app.route('/api/scheduled/<profile_name>/queue', methods=['GET'])
@@ -1416,11 +1503,17 @@ def scheduled_queue(profile_name):
 
     READ-ONLY. This reads scheduled_posts_state.json and writes nothing.
     """
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     # Ask Buffer what it actually did BEFORE reading the state file, so the
     # table below renders the reconciled truth rather than last-known state.
-    reconcile = _reconcile_on_render(profile_name)
+    reconcile = _reconcile_on_render(profile_name, platform=platform)
 
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
     rows = [_scheduled_row_view(k, v) for k, v in state.rows.items()]
 
     counts = {s: 0 for s in _SCHEDULED_STATE_ORDER}
@@ -1433,14 +1526,23 @@ def scheduled_queue(profile_name):
     for bucket in grouped.values():
         bucket.sort(key=lambda r: (r.get("due_at") or "", r.get("updated_at") or ""))
 
-    cfg = (pm.get_profile_config(profile_name) or {}).get("scheduled_posting", {})
-    identity = (cfg.get("identity_slug") or "").strip()
+    # Resolved per (profile, platform). This used to read the FLAT config
+    # fields, which are LinkedIn's - on X it would have shown LinkedIn's
+    # identity beside X's queue, which is exactly the confusion the acting-
+    # account header exists to prevent.
+    account = _scheduled_account(profile_name, platform)
+    identity = account.get("identity_slug") or ""
     return jsonify({
         "counts": counts,
         "order": list(_SCHEDULED_STATE_ORDER),
         # What the poll-on-render just learned. `error` being set means the
         # table is last-known state, and the UI says so rather than implying
         # these statuses were confirmed this second.
+        "platform": platform,
+        # X carries its link in the post BODY - there is no first-comment step
+        # and no browser. Told to the UI rather than inferred there, so the two
+        # cannot drift.
+        "first_comment": platform == pm.SCHEDULED_DEFAULT_PLATFORM,
         "reconcile": {
             "ran": reconcile.get("ran"),
             "changed": len(reconcile.get("changed") or []),
@@ -1458,8 +1560,13 @@ def scheduled_queue(profile_name):
         "total": len(rows),
         "state_file": state.path,
         "config": {
-            "buffer_channel_id": (cfg.get("buffer_channel_id") or "").strip(),
+            "buffer_channel_id": account.get("channel_id") or "",
             "identity_slug": identity,
+            # The fail-closed state, said before anything is clicked: an
+            # unconfigured platform will have its schedule REFUSED by the
+            # guard, and a blank header would not say so.
+            "problem": account.get("problem"),
+            "configured": account.get("configured"),
             # The sweeper cannot be enabled without an identity to enforce.
             # Surfaced here so the UI can disable the control and say why,
             # rather than letting someone turn it on and find out later.
@@ -1481,7 +1588,12 @@ def scheduled_add_rows(profile_name):
     or opens a browser - PENDING rows simply sit in the queue until the
     schedule action is used.
     """
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
 
     upload = request.files.get("file")
     if upload is not None:
@@ -1521,9 +1633,19 @@ def scheduled_add_rows(profile_name):
     })
 
 
-def _scheduled_channel_id(profile_name):
-    cfg = (pm.get_profile_config(profile_name) or {}).get("scheduled_posting", {})
-    return (cfg.get("buffer_channel_id") or "").strip()
+def _scheduled_channel_id(profile_name, platform=pm.SCHEDULED_DEFAULT_PLATFORM):
+    """The Buffer channel this (profile, platform) posts to.
+
+    Still the single config read for the dashboard AND the drain — the drain
+    takes this function by injection and never reads config itself — but the
+    answer now comes from :func:`profile_manager.resolve_scheduled` instead of
+    being spelled out here, so the CLI cannot drift from it.
+
+    ``platform`` defaults to LinkedIn, and for LinkedIn the resolver reads the
+    same flat fields with the same expression this function used, so every
+    existing caller is unchanged.
+    """
+    return pm.resolve_scheduled(profile_name, platform)["channel_id"]
 
 
 @app.route('/api/scheduled/<profile_name>/schedule/preflight', methods=['GET'])
@@ -1535,14 +1657,30 @@ def scheduled_preflight(profile_name):
     resolves to rather than a label kept in local config, which could go stale
     and still read like the dev account.
     """
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
     pending = csv_pipeline.pending_rows(state)
-    channel_id = _scheduled_channel_id(profile_name)
+    account = _scheduled_account(profile_name, platform)
+    channel_id = account.get("channel_id")
+    key = None
+    try:
+        key = pm.resolve_scheduled(profile_name, platform).get("api_key")
+    except pm.ScheduledConfigError:
+        pass      # already reported through `account`
 
     problems = []
     if not channel_id:
         problems.append("No Buffer channel configured. Set "
                         "scheduled_posting.buffer_channel_id in this profile.")
+    if account.get("problem"):
+        # The fail-closed state, said BEFORE the button rather than after the
+        # guard refuses.
+        problems.append(account["problem"])
     if not pending:
         problems.append("Nothing is pending. Add rows to the queue first.")
 
@@ -1550,11 +1688,11 @@ def scheduled_preflight(profile_name):
     channel = None
     if channel_id:
         try:
-            slots = buffer_client.scheduled_slots(channel_id)
+            slots = buffer_client.scheduled_slots(channel_id, key=key)
         except Exception as exc:
             problems.append("Could not read Buffer's scheduled-post limit: %s" % exc)
         try:
-            channel = buffer_client.get_channel(channel_id)
+            channel = buffer_client.get_channel(channel_id, key=key)
         except Exception as exc:
             # Never invent a name. If the id cannot be resolved, say so and let
             # the dialog show the raw id instead of a reassuring guess.
@@ -1571,15 +1709,32 @@ def scheduled_preflight(profile_name):
         "will_hold": max(0, len(pending) - will_send),
         "channel_id": channel_id,
         "channel": channel,
+        "platform": platform,
+        "account": account,
+        # The handle Buffer ACTUALLY reports for this channel, which is what
+        # the identity guard will compare the configured slug against. None
+        # when the channel could not be resolved - never a guess.
+        "actual_handle": csv_pipeline.channel_handle(channel),
         "ready": not problems,
         "problems": problems,
         "previews": [csv_pipeline.row_preview(r, 80) for r in pending[:5]],
     })
 
 
-def _scheduled_schedule_job(job_id, profile_name, channel_id):
+def _scheduled_schedule_job(job_id, profile_name, channel_id,
+                            platform=None):
     """Run the proven schedule pass. Nothing here is a reimplementation."""
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    platform = platform or pm.SCHEDULED_DEFAULT_PLATFORM
+    resolved = {}
+    try:
+        resolved = pm.resolve_scheduled(profile_name, platform)
+    except pm.ScheduledConfigError as exc:
+        log_job(job_id, "REFUSED: %s" % exc)
+        return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
+                "error": str(exc)}
+
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
     rows = csv_pipeline.pending_rows(state)
     log_job(job_id, "Scheduling %d pending row(s) to channel %s"
             % (len(rows), channel_id))
@@ -1587,10 +1742,28 @@ def _scheduled_schedule_job(job_id, profile_name, channel_id):
         return {"scheduled": 0, "failed": 0, "results": [],
                 "note": "nothing pending"}
 
+    # Checked here too, redundantly with the one inside schedule_pass, so an
+    # unresolvable identity (refused even with allow_production=True) never
+    # even reaches the slots read below - the gate must run before ANY Buffer
+    # call, not just before create_post (docs/ARCHITECTURE.md §9). A declared-
+    # production identity WITH allow_production=True (always true here) would
+    # proceed either way, so this only changes the unresolvable-identity case.
+    if platform != pm.SCHEDULED_DEFAULT_PLATFORM:
+        try:
+            pm.check_declared_production(
+                resolved.get("identity_slug"),
+                "schedule a Buffer post on %s" % platform,
+                allow_production=True)
+        except pm.ProductionAccessRefused as exc:
+            log_job(job_id, "REFUSED: %s" % exc)
+            return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
+                    "error": str(exc)}
+
     try:
         # max_age=0: this decides what actually gets sent, so it must not act
         # on a cached count.
-        slots = buffer_client.scheduled_slots(channel_id, max_age=0)
+        slots = buffer_client.scheduled_slots(channel_id, max_age=0,
+                                              key=resolved.get("api_key"))
         log_job(job_id, "Buffer slots: %d of %d used, %d free"
                 % (slots["used"], slots["limit"], slots["free"]))
         max_new = slots["free"]
@@ -1603,10 +1776,28 @@ def _scheduled_schedule_job(job_id, profile_name, channel_id):
         max_new = None
         slot_limit = None
 
-    results = csv_pipeline.schedule_pass(rows, channel_id, state,
-                                         profile_name=profile_name,
-                                         max_new=max_new,
-                                         slot_limit=slot_limit)
+    # The identity guard lives INSIDE schedule_pass (Phase 4a), so this route
+    # is covered by the same check the CLI is - no second implementation, and
+    # no way for a new caller to skip it. It raises rather than returning, so a
+    # refusal cannot be mistaken for "scheduled nothing".
+    #
+    # allow_production=True: this IS the dashboard, which - like the
+    # scheduler - is production doing its job (docs/ARCHITECTURE.md §9). A
+    # bare CLI/module run does not pass this, and is refused by default.
+    try:
+        results = csv_pipeline.schedule_pass(
+            rows, channel_id, state, profile_name=profile_name,
+            max_new=max_new, slot_limit=slot_limit, platform=platform,
+            identity_slug=resolved.get("identity_slug"),
+            key=resolved.get("api_key"), allow_production=True)
+    except csv_pipeline.IdentityRefused as exc:
+        log_job(job_id, "REFUSED: %s" % exc)
+        return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
+                "error": str(exc)}
+    except pm.ProductionAccessRefused as exc:
+        log_job(job_id, "REFUSED: %s" % exc)
+        return {"scheduled": 0, "failed": 0, "held": 0, "results": [],
+                "error": str(exc)}
     scheduled = [r for r in results if r.get("status") == csv_pipeline.SCHEDULED]
     failed = [r for r in results if r.get("status") == csv_pipeline.FAILED]
     on_hold = [r for r in results if r.get("status") == csv_pipeline.HELD]
@@ -1643,7 +1834,12 @@ def scheduled_schedule(profile_name):
     pending_rows, and schedule_pass refuses it again on its own - two
     independent guards against the one thing that must never happen.
     """
-    channel_id = _scheduled_channel_id(profile_name)
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    channel_id = _scheduled_channel_id(profile_name, platform)
     if not channel_id:
         return jsonify({"error": "No Buffer channel configured for this "
                                  "profile. Set scheduled_posting."
@@ -1655,13 +1851,14 @@ def scheduled_schedule(profile_name):
                                  "click). Wait for it to finish - running two "
                                  "at once could post the same row twice."}), 409
 
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
     if not csv_pipeline.pending_rows(state):
         return jsonify({"ok": True, "job_id": None,
                         "note": "Nothing pending or held - nothing to schedule."})
 
     job_id = f"buffer_schedule_{profile_name}_{int(time.time())}"
-    run_job(job_id, _scheduled_schedule_job, profile_name, channel_id,
+    run_job(job_id, _scheduled_schedule_job, profile_name, channel_id, platform,
             profile=profile_name, task_type="api", category="buffer_schedule")
     return jsonify({"ok": True, "job_id": job_id})
 
@@ -1679,7 +1876,12 @@ def scheduled_delete_row(profile_name, key):
     single click by someone who thinks it unschedules the post. The response
     says exactly what was and was not affected.
     """
-    state = csv_pipeline.PipelineState(profile_name=profile_name)
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
     entry = state.get(key)
     if key not in state.rows:
         return jsonify({"error": "No such row in the queue"}), 404
