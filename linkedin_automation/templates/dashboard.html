@@ -1838,11 +1838,11 @@ function goStep(step) {
     }
   }
   if (step === 'post') {
-    if (!postQueue || postQueue.length === 0) {
-      loadPostQueue().then(() => renderPostPreview());
-    } else {
-      renderPostPreview();
-    }
+    // Unconditional, unlike 'posts'/'review' above: the Post step is the one
+    // that actually fires a LinkedIn write, so a stale queue here risks
+    // posting drafts the store no longer has (or missing ones it gained) —
+    // not just a wrong number on screen. Always re-read (Dispatch 23).
+    loadPostQueue().then(() => renderPostPreview());
   }
 }
 
@@ -2003,6 +2003,10 @@ async function restorePost(key) {
   } catch (e) { /* ignore */ }
   await showLifecycle('TRASH');
   loadExistingPosts();
+  // A restored record can land in GENERATED (§1.2: TRASH -> GENERATED if a
+  // draft survives), so Review Comments and the Post queue can both grow.
+  loadExistingComments();
+  loadPostQueue();
 }
 
 async function rejectPost(key, index) {
@@ -2020,6 +2024,10 @@ async function rejectPost(key, index) {
   }
   await loadExistingPosts();
   renderPosts();
+  // reject() moves ANY status -> TRASH(manual) (post_store.py), not only NEW,
+  // so the Post queue can shrink here too even though this button lives on
+  // the Posts panel.
+  loadPostQueue();
 }
 
 // ─── Scraping ───────────────────────────────────────────
@@ -2223,6 +2231,8 @@ async function startGenerate() {
         renderComments();
         goStep('review');
       });
+      // Newly-drafted posts are GENERATED now, so the Post queue can grow too.
+      loadPostQueue();
     }
   );
 }
@@ -2270,7 +2280,7 @@ function renderComments() {
         <textarea class="comment-edit" id="cedit-${i}" rows="3">${esc(c.comment || c.text || '')}</textarea>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.5rem">
           <span class="comment-style">${esc(c.style || '')} · ${c.word_count || '?'} words</span>
-          <button class="btn btn-danger btn-sm" onclick="removeComment(${i})">Remove</button>
+          <button class="btn btn-danger btn-sm" onclick='removeComment(${JSON.stringify(c.key || c.url || c.post_url || "")}, ${i})'>Remove</button>
         </div>
       </div>`;
   }).join('');
@@ -2278,9 +2288,27 @@ function renderComments() {
   updateCounts();
 }
 
-function removeComment(index) {
-  commentsData.comments.splice(index, 1);
+// "Remove" is a real store mutation (TRASH(manual) via the same reject
+// endpoint the Posts panel uses), not a local splice. A comment removed here
+// used to just vanish from the client array while staying GENERATED in the
+// store — still postable, and still counted in every bin/queue that reads
+// the store. Dispatch 23.1.
+async function removeComment(key, index) {
+  if (!currentProfile || !key) return;
+  try {
+    await fetch(`/api/posts/${currentProfile}/reject`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key })
+    });
+  } catch (e) { /* ignore */ }
+  // Optimistic removal, then re-read the store so list and chips can't diverge.
+  if (typeof index === 'number' && commentsData.comments) {
+    commentsData.comments.splice(index, 1);
+    renderComments();
+  }
+  await loadExistingComments();
   renderComments();
+  loadPostQueue();
 }
 
 async function saveComments() {
@@ -2400,6 +2428,27 @@ function startActiveJobsPolling() {
   activeJobsInterval = setInterval(refreshActiveJobs, 3000);
 }
 
+// ─── Cache freshness against externally-driven changes ──────────────────
+// Every in-tab mutation above re-reads lifecycleCounts/postQueue after its
+// own request, but a scheduled run firing in the background, a second tab,
+// or a CLI run changes the store with no request this tab ever sees — so no
+// mutation handler here can catch it. This is the only defense against that
+// case (Dispatch 23.2): poll the same two reads on a timer. It only ever
+// reads; the store itself has no lock, so a redundant read is harmless
+// (§1.8 in ARCHITECTURE.md).
+let cacheRefreshInterval = null;
+
+function startCacheRefreshPolling() {
+  if (cacheRefreshInterval) return;
+  cacheRefreshInterval = setInterval(() => {
+    if (!currentProfile) return;
+    loadLifecycle();
+    loadPostQueue().then(() => {
+      if (currentStep === 'post') renderPostPreview();
+    });
+  }, 20000);
+}
+
 async function refreshActiveJobs() {
   try {
     const res = await fetch('/api/jobs/active');
@@ -2444,6 +2493,7 @@ async function refreshActiveJobs() {
 
 // Start polling on page load
 document.addEventListener('DOMContentLoaded', startActiveJobsPolling);
+document.addEventListener('DOMContentLoaded', startCacheRefreshPolling);
 
 // ─── Async Job Launcher ─────────────────────────────
 
