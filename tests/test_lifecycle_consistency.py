@@ -386,11 +386,17 @@ def test_show_new_posts_fetches_before_rendering(client_source):
 
 def test_go_step_reloads_every_panel_whose_cache_is_empty(client_source):
     """Defect A's other half: goStep('posts') had no reload-if-empty fallback
-    (goStep('review') did), so the tab stayed empty for the rest of the session."""
+    (goStep('review') did), so the tab stayed empty for the rest of the session.
+
+    'post' is deliberately NOT covered here any more: Dispatch 23 made it
+    reload unconditionally rather than only-if-empty (see
+    test_go_step_post_rereads_unconditionally_not_only_when_empty), since a
+    stale-but-nonempty queue there risks posting the wrong drafts, not just
+    showing a wrong number.
+    """
     body = _function_body(client_source, "goStep")
     for cache, loader in (("postsData.posts", "loadExistingPosts"),
-                          ("commentsData.comments", "loadExistingComments"),
-                          ("postQueue", "loadPostQueue")):
+                          ("commentsData.comments", "loadExistingComments")):
         assert cache in body and loader in body, f"goStep must reload {cache} when empty"
 
 
@@ -451,6 +457,130 @@ def _function_body(source, name):
                 return source[match.end():i]
         i += 1
     raise AssertionError(f"unbalanced braces in {name}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEFECT E — client cache coherence (Dispatch 23)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# AUDIT_22 (.dev/scratch/AUDIT_22.md): the store and its three endpoints always
+# agreed with each other; the screen didn't. Two causes: removeComment spliced
+# the client array with no server call at all, and lifecycleCounts/postQueue
+# were each refreshed by an incomplete, non-overlapping set of triggers. These
+# pin the endpoint-level mutation removeComment now performs (store-level, per
+# the dispatch's own "assert on the store, not on the client array"), and the
+# client wiring that keeps both caches from outliving the store state they
+# were last read from.
+
+def test_removed_comment_becomes_trash_and_leaves_generated_bin(env, client):
+    """The endpoint removeComment now calls, exercised directly: what
+    'Remove' does to the STORE, not to commentsData."""
+    _seed(env, [_rec(1, GENERATED, comment="keep me"),
+                _rec(2, GENERATED, comment="remove me")])
+    resp = client.post("/api/posts/demo/reject", json={"key": ACTIVITY.format(2)})
+    assert resp.status_code == 200
+
+    store = PostStore("demo")
+    removed = store.get(ACTIVITY.format(2))
+    assert removed["status"] == TRASH
+    assert removed["trash_reason"] == REASON_MANUAL
+    generated_keys = {r["key"] for r in store.by_status(GENERATED)}
+    assert ACTIVITY.format(2) not in generated_keys
+    assert ACTIVITY.format(1) in generated_keys
+
+
+def test_removed_comment_is_never_offered_by_the_post_step(env, client, monkeypatch):
+    """A comment 'removed' in Review Comments must not still be postable."""
+    _seed(env, [_rec(1, GENERATED, comment="keep me"),
+                _rec(2, GENERATED, comment="remove me")])
+    client.post("/api/posts/demo/reject", json={"key": ACTIVITY.format(2)})
+
+    captured = {}
+    monkeypatch.setattr(dash, "run_job",
+                        lambda job_id, fn, *a, **k: captured.update(args=a))
+    monkeypatch.setattr(dash, "can_start_browser_task", lambda *a, **k: True)
+    assert client.post("/api/post/demo", json={"count": 2}).status_code == 200
+
+    body = open(captured["args"][1], encoding="utf-8").read()
+    assert "keep me" in body
+    assert "remove me" not in body
+
+
+def test_remove_comment_calls_the_reject_endpoint_not_a_local_splice(client_source):
+    """The client-side half of DEFECT E: 'Remove' used to be
+    ``commentsData.comments.splice(index, 1)`` with no request at all, so a
+    'removed' draft stayed GENERATED in the store and was still postable."""
+    body = _function_body(client_source, "removeComment")
+    assert "await fetch" in body
+    assert "/reject" in body
+    assert "loadExistingComments" in body
+    assert "loadPostQueue" in body
+
+
+def test_reject_post_reloads_the_post_queue_too(client_source):
+    """post_store.reject() moves ANY status -> TRASH, not only NEW, so a
+    GENERATED record rejected from the Posts panel must drop out of the Post
+    queue too, not only out of postsData."""
+    body = _function_body(client_source, "rejectPost")
+    assert "loadExistingPosts" in body   # pre-existing; lifecycleCounts piggybacks on its response
+    assert "loadPostQueue" in body
+
+
+def test_restore_post_reloads_comments_and_queue(client_source):
+    """post_store.restore() can move TRASH -> GENERATED if a draft survives,
+    so Review Comments and the Post queue can both grow, not just the Posts
+    tab that the Restore button lives on."""
+    body = _function_body(client_source, "restorePost")
+    assert "loadExistingComments" in body
+    assert "loadPostQueue" in body
+
+
+def test_save_comments_reloads_lifecycle_and_queue(client_source):
+    body = _function_body(client_source, "saveComments")
+    assert "loadExistingComments" in body   # lifecycleCounts piggybacks on its response
+    assert "loadPostQueue" in body
+
+
+def test_generate_reloads_the_post_queue(client_source):
+    """Drafting moves NEW -> GENERATED; startGenerate refreshed postsData and
+    commentsData but never the Post queue, so a freshly-drafted comment could
+    be postable in the store while the Post panel still showed the old count."""
+    body = _function_body(client_source, "startGenerate")
+    assert "loadPostQueue" in body
+
+
+def test_start_posting_reloads_lifecycle_and_queue(client_source):
+    body = _function_body(client_source, "startPosting")
+    assert "loadExistingPosts" in body
+    assert "loadExistingComments" in body
+    assert "loadPostQueue" in body
+
+
+def test_go_step_post_rereads_unconditionally_not_only_when_empty(client_source):
+    """Unlike 'posts'/'review', the Post step must always re-read: it is the
+    step that actually fires a write, so a stale-but-nonempty queue here risks
+    posting the wrong drafts, not just showing a wrong number on screen."""
+    body = _function_body(client_source, "goStep")
+    match = re.search(r"if \(step === 'post'\) \{(.*?)\n  \}", body, re.S)
+    assert match, "goStep('post') branch not found"
+    post_branch = match.group(1)
+    assert "postQueue.length === 0" not in post_branch, (
+        "goStep('post') must not gate its reload on the cache being empty"
+    )
+    assert "loadPostQueue()" in post_branch
+
+
+def test_cache_refresh_polling_covers_externally_driven_changes(client_source):
+    """A scheduled run, a second tab, or a CLI run changes the store with no
+    request this tab ever makes, so none of the mutation-triggered reloads
+    above can catch it. This bounded poll is the only remaining defense."""
+    assert "function startCacheRefreshPolling" in client_source
+    body = _function_body(client_source, "startCacheRefreshPolling")
+    assert "loadLifecycle" in body
+    assert "loadPostQueue" in body
+    assert "setInterval" in body
+    assert ("document.addEventListener('DOMContentLoaded', "
+            "startCacheRefreshPolling);") in client_source
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -562,7 +692,19 @@ def test_HUMAN_CHECKLIST_for_the_rendering_path():
          with no `Total: 0` file involved.
       6. TRASH VIEW → evaluator-rejected posts read "Rejected by evaluator" and
          the Restore button returns them to NEW.
+      7. REMOVE (Dispatch 23) → in Review Comments, click Remove on a draft.
+         Confirm it disappears from Review Comments AND from the Post-step
+         preview, and that "Check Selectors"-style backend confirmation (the
+         Trash lifecycle chip) increments by one. Refresh the page; it must
+         stay gone, not reappear (proof it hit the store, not just the array).
+      8. STALE QUEUE (Dispatch 23) → open the dashboard in two tabs on the
+         same profile. In tab A, approve/save comments so the Post queue has
+         N items. In tab B, reject one of those same drafts from Review
+         Comments (or wait for a scheduled post run to fire). Within ~20s,
+         confirm tab A's queue count and Post-step list update on their own,
+         with no click in tab A. (Was: no mechanism — a second tab or a
+         scheduled run could post a draft while tab A still offered it.)
 
-    Items 1-3 and 5-6 are pure rendering; item 4 is observable in the job log.
+    Items 1-3 and 5-8 are pure rendering; item 4 is observable in the job log.
     """
     assert True

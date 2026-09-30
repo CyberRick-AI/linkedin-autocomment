@@ -309,8 +309,23 @@ positives. If you change it, re-run the calibration against `COMMENTED` +
   `tests/test_lifecycle_consistency.py` asserts on `dashboard.html` source
   directly for this reason.
 - **`postsData` / `commentsData` / `postQueue` are render state, never truth.**
-  Every panel re-reads the store when its cache is empty (`goStep`), and every
-  mutation re-reads rather than splicing.
+  `goStep('posts')`/`goStep('review')` re-read their cache only when it's
+  empty; `goStep('post')` re-reads `postQueue` unconditionally on every visit,
+  because the Post step is the one that actually fires a write — a
+  stale-but-nonempty queue there risks posting the wrong drafts, not just
+  showing a wrong number (Dispatch 23; `.dev/scratch/AUDIT_22.md` is the
+  audit that found the gap, `.dev/BACKLOG.md` has the matching `goStep('posts')`/
+  `goStep('review')` gap left open). Every mutation that can change the
+  GENERATED bin (reject, restore, save/approve, generate, post) re-reads both
+  `lifecycleCounts` and `postQueue` after its own request, rather than
+  splicing — `removeComment` included: "Remove" is a real store mutation
+  (`TRASH(manual)` via the same reject endpoint the Posts panel uses), not a
+  local array splice. A scheduled run, a second tab, or a CLI run can still
+  change the store with no request this tab makes; `startCacheRefreshPolling()`
+  polls `lifecycleCounts`/`postQueue` every 20s as the one mechanism that
+  catches that case (`postsData`/`commentsData` are deliberately excluded —
+  Review Comments holds live unsaved per-draft edits a poll-triggered
+  re-render would discard).
 - **The New chip must do a server read.** It is the only chip that ever pointed
   at a client cache, and that is exactly the chip that broke.
 - **`save_comments` archives every `comments_*.json`.** Harmless now — nothing
