@@ -309,13 +309,16 @@ positives. If you change it, re-run the calibration against `COMMENTED` +
   `tests/test_lifecycle_consistency.py` asserts on `dashboard.html` source
   directly for this reason.
 - **`postsData` / `commentsData` / `postQueue` are render state, never truth.**
-  `goStep('posts')`/`goStep('review')` re-read their cache only when it's
-  empty; `goStep('post')` re-reads `postQueue` unconditionally on every visit,
-  because the Post step is the one that actually fires a write — a
-  stale-but-nonempty queue there risks posting the wrong drafts, not just
-  showing a wrong number (Dispatch 23; `.dev/scratch/AUDIT_22.md` is the
-  audit that found the gap, `.dev/BACKLOG.md` has the matching `goStep('posts')`/
-  `goStep('review')` gap left open). Every mutation that can change the
+  All three of `goStep('posts')`/`goStep('review')`/`goStep('post')` re-read
+  their cache unconditionally on every visit — not only when it happens to be
+  empty. `goStep('post')` got this first (Dispatch 23: the Post step is the
+  one that actually fires a write, so a stale-but-nonempty queue there risks
+  posting the wrong drafts); `'posts'`/`'review'` followed in the same
+  dispatch's immediate follow-up once the same staleness risk was recognized
+  as structural rather than Post-step-specific — a non-empty-but-stale cache
+  was rendering untouched on navigation back to either panel after a mutation
+  made elsewhere. `.dev/scratch/AUDIT_22.md` is the audit that found the
+  original gap. Every mutation that can change the
   GENERATED bin (reject, restore, save/approve, generate, post) re-reads both
   `lifecycleCounts` and `postQueue` after its own request, rather than
   splicing — `removeComment` included: "Remove" is a real store mutation

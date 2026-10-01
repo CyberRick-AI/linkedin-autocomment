@@ -384,20 +384,39 @@ def test_show_new_posts_fetches_before_rendering(client_source):
     assert "renderPosts()" in body
 
 
-def test_go_step_reloads_every_panel_whose_cache_is_empty(client_source):
-    """Defect A's other half: goStep('posts') had no reload-if-empty fallback
-    (goStep('review') did), so the tab stayed empty for the rest of the session.
-
-    'post' is deliberately NOT covered here any more: Dispatch 23 made it
-    reload unconditionally rather than only-if-empty (see
-    test_go_step_post_rereads_unconditionally_not_only_when_empty), since a
-    stale-but-nonempty queue there risks posting the wrong drafts, not just
-    showing a wrong number.
-    """
+def test_go_step_wires_every_loader(client_source):
+    """Defect A's original half: goStep('posts') had no reload-if-empty
+    fallback (goStep('review') did), so the tab stayed empty for the rest of
+    the session. This only pins that all three loaders are wired into goStep
+    at all — it would pass under either the old only-if-empty guard or the
+    current unconditional reload, so it does NOT by itself prove
+    unconditionality. test_go_step_rereads_unconditionally_not_only_when_empty
+    is the test that pins the "no empty-check guard, every visit" contract
+    all three steps now share (Dispatch 23, then its follow-up for 'posts'/
+    'review')."""
     body = _function_body(client_source, "goStep")
-    for cache, loader in (("postsData.posts", "loadExistingPosts"),
-                          ("commentsData.comments", "loadExistingComments")):
-        assert cache in body and loader in body, f"goStep must reload {cache} when empty"
+    for loader in ("loadExistingPosts", "loadExistingComments", "loadPostQueue"):
+        assert loader in body, f"goStep must reload via {loader}"
+
+
+@pytest.mark.parametrize("step,cache,loader", [
+    ("posts", "postsData.posts", "loadExistingPosts"),
+    ("review", "commentsData.comments", "loadExistingComments"),
+    ("post", "postQueue", "loadPostQueue"),
+])
+def test_go_step_rereads_unconditionally_not_only_when_empty(client_source, step, cache, loader):
+    """None of the three steps may gate its reload on the cache being empty —
+    the rendered list is the contract, not the HTTP response (§1.8): a
+    non-empty-but-stale cache rendering untouched is exactly the bug a
+    'reload only if empty' guard reintroduces."""
+    body = _function_body(client_source, "goStep")
+    match = re.search(r"if \(step === '" + step + r"'\) \{(.*?)\n  \}", body, re.S)
+    assert match, f"goStep('{step}') branch not found"
+    branch = match.group(1)
+    assert cache + ".length === 0" not in branch, (
+        f"goStep('{step}') must not gate its reload on the cache being empty"
+    )
+    assert loader in branch
 
 
 def test_load_existing_posts_can_refill_a_cleared_cache(client_source):
@@ -554,20 +573,6 @@ def test_start_posting_reloads_lifecycle_and_queue(client_source):
     assert "loadExistingPosts" in body
     assert "loadExistingComments" in body
     assert "loadPostQueue" in body
-
-
-def test_go_step_post_rereads_unconditionally_not_only_when_empty(client_source):
-    """Unlike 'posts'/'review', the Post step must always re-read: it is the
-    step that actually fires a write, so a stale-but-nonempty queue here risks
-    posting the wrong drafts, not just showing a wrong number on screen."""
-    body = _function_body(client_source, "goStep")
-    match = re.search(r"if \(step === 'post'\) \{(.*?)\n  \}", body, re.S)
-    assert match, "goStep('post') branch not found"
-    post_branch = match.group(1)
-    assert "postQueue.length === 0" not in post_branch, (
-        "goStep('post') must not gate its reload on the cache being empty"
-    )
-    assert "loadPostQueue()" in post_branch
 
 
 def test_cache_refresh_polling_covers_externally_driven_changes(client_source):

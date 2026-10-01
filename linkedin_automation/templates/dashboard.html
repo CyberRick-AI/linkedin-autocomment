@@ -1818,30 +1818,19 @@ function goStep(step) {
     el.classList.toggle('active', el.id === 'panel-' + step);
   });
   
-  // Every panel re-reads the store when its cache is empty. postsData /
-  // commentsData are RENDER STATE, never the source of truth — the store is.
-  // Without this fallback the Review Posts tab stayed empty for the rest of the
-  // session after any mutation, while the chips (which do re-read) showed the
-  // true count. That mismatch is the bug this guard exists to prevent.
+  // Every panel re-reads the store on every visit, unconditionally — not only
+  // when its cache happens to be empty. postsData / commentsData / postQueue
+  // are RENDER STATE, never the source of truth — the store is. The
+  // only-if-empty guard this replaced (Dispatch 23) left a non-empty-but-stale
+  // cache rendered untouched: navigating away and back showed the same list
+  // even after a mutation elsewhere had changed the store.
   if (step === 'posts') {
-    if (!postsData.posts || postsData.posts.length === 0) {
-      loadExistingPosts().then(() => renderPosts());
-    } else {
-      renderPosts();
-    }
+    loadExistingPosts().then(() => renderPosts());
   }
   if (step === 'review') {
-    if (!commentsData.comments || commentsData.comments.length === 0) {
-      loadExistingComments().then(() => renderComments());
-    } else {
-      renderComments();
-    }
+    loadExistingComments().then(() => renderComments());
   }
   if (step === 'post') {
-    // Unconditional, unlike 'posts'/'review' above: the Post step is the one
-    // that actually fires a LinkedIn write, so a stale queue here risks
-    // posting drafts the store no longer has (or missing ones it gained) —
-    // not just a wrong number on screen. Always re-read (Dispatch 23).
     loadPostQueue().then(() => renderPostPreview());
   }
 }
