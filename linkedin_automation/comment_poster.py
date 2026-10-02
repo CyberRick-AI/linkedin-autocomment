@@ -201,6 +201,7 @@ class LinkedInCommentPoster:
         self.run_timing = None
         self.last_comment_timing = None
         self.like_misses = 0
+        self._last_like_button_selector = None
 
     # ─── Timing (Dispatch 15.1) ──────────────────────────────────────────────
 
@@ -651,12 +652,18 @@ class LinkedInCommentPoster:
     LIKE_POLL_SECONDS = 0.25
 
     def find_like_button(self, timeout=None):
-        """The first clickable Like control, or None. Bounded in TOTAL."""
+        """The first clickable Like control, or None. Bounded in TOTAL.
+
+        Also records which selector matched on ``_last_like_button_selector``
+        (None on a miss) - the "condition that decided the verdict" for the
+        placed-outcome capture in ``like_post``.
+        """
         declared = self.LIKE_WAIT_SECONDS if timeout is None else timeout
         started = time.time()
-        found = self._find_like_button_loop(declared)
+        found, selector = self._find_like_button_loop(declared)
         self._poll_done("find_like_button", declared, started,
                         "found" if found is not None else "not_found")
+        self._last_like_button_selector = selector
         return found
 
     def _find_like_button_loop(self, timeout):
@@ -666,11 +673,11 @@ class LinkedInCommentPoster:
                 try:
                     for el in self.driver.find_elements(By.CSS_SELECTOR, selector):
                         if el.is_displayed() and el.is_enabled():
-                            return el
+                            return el, selector
                 except Exception:
                     continue
             if time.time() >= deadline:
-                return None
+                return None, None
             time.sleep(self.LIKE_POLL_SECONDS)
 
     def like_post(self) -> bool:
@@ -683,11 +690,14 @@ class LinkedInCommentPoster:
                 liked_selectors = self.LIKED_STATE_SELECTORS
 
                 for selector in liked_selectors:
-                    if self.driver.find_elements(By.CSS_SELECTOR, selector):
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
                         self.logger.info("Post already liked")
+                        self.note_like_state("already_liked", selector, elements[0])
                         return True
 
                 self.note_like_miss("like button not found")
+                self.note_like_state("miss", None, None)
                 return False
 
             # Click like button with a natural mouse approach + click.
@@ -695,11 +705,14 @@ class LinkedInCommentPoster:
             hb.human_sleep(1.2, 2.4)
 
             self.logger.info("✅ Post liked successfully")
+            self.note_like_state("placed", self._last_like_button_selector,
+                                 like_button)
             return True
 
         except Exception as e:
             self.logger.error(f"Error liking post: {e}")
             self.note_like_miss("error: %s" % e)
+            self.note_like_state("miss", None, None)
             return False
 
     # ─── A Like miss is soft, but LOUD (Dispatch 15.2) ───────────────────────
@@ -800,6 +813,76 @@ class LinkedInCommentPoster:
                            self.LIKED_STATE_SELECTORS)})
         except Exception:
             self.logger.debug("like-miss capture failed", exc_info=True)
+
+    # ─── Every like verdict needs positive proof (Dispatch 24) ───────────────
+    #
+    # The already-liked branch above used to return True with no evidence at
+    # all. On 2026-09-24, four posts the tool had never touched all reported
+    # "already liked" after the Like poll found nothing - and because that
+    # branch captured nothing, there was no way to tell a correct read (the
+    # post really was already reacted to, MAINTENANCE §6.8's unverified
+    # LIKED_STATE_SELECTORS doing its job) from a miss that was simply
+    # misclassified and so bypassed note_like_miss's capture entirely.
+    #
+    # This instruments all THREE outcomes - placed, miss, already_liked -
+    # uniformly: which condition decided the verdict, and the deciding
+    # element's aria-label/aria-pressed/class. It is deliberately separate
+    # from note_like_miss, which stays unconditional and loud (Dispatch 15.2):
+    # that capture exists so a dead Like selector is never silent. This one is
+    # for a deliberate capture session, not every run - routinely writing a
+    # screenshot/DOM/JSON triple for every single ordinary "placed" like would
+    # be noise - so it is flag-gated, default OFF.
+    LIKE_STATE_CAPTURE = False
+
+    def _describe_element(self, element):
+        """aria-label / aria-pressed / class of the element a verdict was
+        decided from, or None when no element decided it (a miss). Never
+        raises - a stale element reads as an error entry, not a crash."""
+        if element is None:
+            return None
+        try:
+            return {
+                "aria_label": element.get_attribute("aria-label"),
+                "aria_pressed": element.get_attribute("aria-pressed"),
+                "class": (element.get_attribute("class") or "")[:200],
+            }
+        except Exception:
+            return {"error": "element went stale while reading"}
+
+    def note_like_state(self, outcome, decided_by, element):
+        """Capture evidence for the like verdict, behind LIKE_STATE_CAPTURE.
+
+        ``outcome`` is one of "placed", "miss", "already_liked". ``decided_by``
+        is the selector (or None, for a miss) that matched. Never raises.
+        """
+        if not self.LIKE_STATE_CAPTURE:
+            return
+        try:
+            self._report_like_state(outcome, decided_by, element)
+        except Exception:
+            self.logger.debug("like-state report failed", exc_info=True)
+
+    def _report_like_state(self, outcome, decided_by, element):
+        timing = getattr(self, "_timing", None)
+        post = timing.post_id if timing is not None else None
+        if post is None:
+            try:
+                post = self.post_identity(self.driver.current_url) or \
+                    self.driver.current_url
+            except Exception:
+                post = "-"
+        deciding_element = self._describe_element(element)
+        self.logger.info(
+            "LIKE STATE post=%s outcome=%s decided_by=%s element=%s",
+            post, outcome, decided_by, deciding_element)
+        capture_failure(self.driver, "like_state", self.profile_name,
+                        page_source=True)
+        region, buttons = self.like_region_buttons()
+        capture_like_state(
+            self.driver, "like_state", self.profile_name, buttons,
+            region=region,
+            extra={"outcome": outcome, "post": post, "decided_by": decided_by,
+                   "deciding_element": deciding_element})
 
     def open_comment_box(self) -> Optional:
         """Open the comment box and return the input element."""

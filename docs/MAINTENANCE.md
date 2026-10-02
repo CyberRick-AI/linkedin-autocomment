@@ -427,6 +427,23 @@ inferred from the unliked shape; no capture of a liked post exists.** It is safe
 to be wrong here: liking is non-critical, and a failed like logs a warning and
 the comment proceeds.
 
+**Every verdict can be captured, not just a miss (Dispatch 24).** The
+already-liked branch above used to `return True` with zero evidence — so a
+genuine miss that happened to match `LIKED_STATE_SELECTORS` (the unverified
+selector just above) was indistinguishable from a correct already-liked read.
+On 2026-09-24 four posts the tool had never touched all reported "already
+liked" after the Like poll found nothing, with nothing captured to tell the
+two cases apart. `LinkedInCommentPoster.LIKE_STATE_CAPTURE` (default `False`)
+turns on a capture for **all three** outcomes — placed, miss, already_liked —
+writing `failure_like_state_<ts>.png` / `.html` / `_likedom.json` (same shape
+as the always-on `like_miss` capture below) with `outcome`, `decided_by` (the
+selector that matched, or `None` for a miss) and `deciding_element`
+(aria-label/aria-pressed/class, or `None` for a miss). It is additive to, and
+does not replace, the unconditional `like_miss` capture (§6.8's own miss path
+stays loud and unconditional per Dispatch 15.2) — turn it on for a deliberate
+capture session when the already-liked classification itself is in question,
+not as a routine setting.
+
 
 ## 7. Posts that are GONE (deleted, taken down, made private)
 
