@@ -809,7 +809,9 @@ def test_still_no_commenting_route_exists():
     to be added here deliberately. `reconcile` is listed because it only asks
     Buffer what it already did and writes the answer to our own state file - it
     cannot create a post and cannot comment. The comment sweep stays on its own
-    path.
+    path. `rows/delete` (Dispatch 27) is the batch counterpart of `rows/<key>`:
+    it deletes OUR records in a loop over the same `delete_row` the single-row
+    route uses - it cannot create a post or comment either.
     """
     writes = sorted(str(r) for r in dashboard.app.url_map.iter_rules()
                     if str(r).startswith("/api/scheduled")
@@ -817,6 +819,7 @@ def test_still_no_commenting_route_exists():
     assert writes == ["/api/scheduled/<profile_name>/reconcile",
                       "/api/scheduled/<profile_name>/rows",
                       "/api/scheduled/<profile_name>/rows/<key>",
+                      "/api/scheduled/<profile_name>/rows/delete",
                       "/api/scheduled/<profile_name>/schedule"], writes
 
 
@@ -1163,3 +1166,301 @@ def test_held_sits_between_pending_and_scheduled_in_the_ordering(client,
     assert order.index(cp.HELD) < order.index(cp.SCHEDULED)
     # and still below the genuine problems
     assert order.index(cp.FAILED) < order.index(cp.HELD)
+
+
+# ─── Phase B: bulk delete (Dispatch 27) ──────────────────────────────────────
+#
+# The single-row DELETE (above) was the only way to remove more than one row -
+# AUDIT 26 found it was one confirm-dialog at a time, with no bulk path
+# anywhere in the queue. This is the batch path: POST
+# /api/scheduled/<profile>/rows/delete, looping the existing `delete_row` via
+# `csv_pipeline.delete_rows` rather than reimplementing deletion.
+#
+# The gate is on the FILE, not the HTTP response - a response can claim
+# anything; scheduled_posts_state.json is what the next render actually reads.
+
+def _seed_rows(path, rows):
+    """Write ``rows`` (key -> entry) straight to the state file, unvalidated -
+    these tests are about deletion, not about what makes a row postable."""
+    path.write_text(json.dumps({"rows": rows}), encoding="utf-8")
+
+
+def _batch_delete(client, profile, keys, confirm_live=False):
+    return client.post("/api/scheduled/%s/rows/delete" % profile,
+                       json={"keys": keys, "confirm_live": confirm_live})
+
+
+def test_a_batch_delete_removes_exactly_the_selected_keys_from_the_file(
+        client, empty_state, no_buffer):
+    _seed_rows(empty_state, {
+        "k1": {"status": cp.PENDING, "row": {"post_text": "one"}},
+        "k2": {"status": cp.PENDING, "row": {"post_text": "two"}},
+        "k3": {"status": cp.PENDING, "row": {"post_text": "three"}},
+    })
+    r = _batch_delete(client, "p", ["k1", "k3"])
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    # The two numbers the dispatch asks for, by name.
+    assert body["selected_count"] == 2
+    assert body["deleted_count"] == 2
+
+    saved = json.loads(empty_state.read_text(encoding="utf-8"))["rows"]
+    assert set(saved) == {"k2"}, "exactly the selected keys must be gone"
+
+
+def test_a_live_row_without_confirm_blocks_the_whole_batch(client, empty_state,
+                                                            no_buffer):
+    """A batch of 2 where only 1 row is live. Nothing is deleted - not even
+    the safe one - until confirm_live covers the whole batch."""
+    _seed_rows(empty_state, {
+        "k1": {"status": cp.PENDING, "row": {"post_text": "safe"}},
+        "k2": {"status": cp.SCHEDULED, "post_id": "p2",
+               "row": {"post_text": "live"}},
+    })
+    before = empty_state.read_bytes()
+
+    r = _batch_delete(client, "p", ["k1", "k2"])
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["deleted_count"] == 0
+    assert body["live_count"] == 1
+    assert body["live_rows"][0]["key"] == "k2"
+    assert body["live_rows"][0]["post_id"] == "p2"
+
+    assert empty_state.read_bytes() == before, (
+        "a live row without confirm must delete NOTHING, not the safe subset")
+
+
+def test_the_same_batch_with_confirm_deletes_all_of_them(client, empty_state,
+                                                          no_buffer):
+    _seed_rows(empty_state, {
+        "k1": {"status": cp.PENDING, "row": {"post_text": "safe"}},
+        "k2": {"status": cp.SCHEDULED, "post_id": "p2",
+               "row": {"post_text": "live"}},
+    })
+    r = _batch_delete(client, "p", ["k1", "k2"], confirm_live=True)
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["selected_count"] == 2
+    assert body["deleted_count"] == 2
+
+    saved = json.loads(empty_state.read_text(encoding="utf-8"))["rows"]
+    assert saved == {}
+
+
+def test_a_failure_mid_batch_leaves_the_succeeded_ones_deleted_and_reports_the_rest(
+        client, empty_state, no_buffer, monkeypatch):
+    """k2 of 3 fails to delete. k1 and k3 must actually be gone from the FILE,
+    and the response must say which one failed and why - not stop silently,
+    not claim success for the batch."""
+    _seed_rows(empty_state, {
+        "k1": {"status": cp.PENDING, "row": {"post_text": "one"}},
+        "k2": {"status": cp.PENDING, "row": {"post_text": "two"}},
+        "k3": {"status": cp.PENDING, "row": {"post_text": "three"}},
+    })
+    real_delete_row = cp.delete_row
+
+    def flaky_delete_row(state, key):
+        if key == "k2":
+            raise RuntimeError("disk is full")
+        return real_delete_row(state, key)
+
+    # csv_pipeline.delete_rows calls the module-level `delete_row` by name, so
+    # patching the module attribute reaches the call inside it too.
+    monkeypatch.setattr(cp, "delete_row", flaky_delete_row)
+
+    r = _batch_delete(client, "p", ["k1", "k2", "k3"])
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is False, "a partial batch must not claim success"
+    assert body["selected_count"] == 3
+    assert body["deleted_count"] == 2
+
+    by_key = {res["key"]: res for res in body["results"]}
+    assert by_key["k1"]["status"] == "deleted"
+    assert by_key["k3"]["status"] == "deleted"
+    assert by_key["k2"]["status"] == "error"
+    assert "disk is full" in by_key["k2"]["error"]
+
+    saved = json.loads(empty_state.read_text(encoding="utf-8"))["rows"]
+    assert set(saved) == {"k2"}, "k2 failed to delete - it must still be in the file"
+
+
+def test_an_unknown_key_is_reported_not_found_without_blocking_the_rest(
+        client, empty_state, no_buffer):
+    _seed_rows(empty_state, {"k1": {"status": cp.PENDING,
+                                    "row": {"post_text": "one"}}})
+    r = _batch_delete(client, "p", ["k1", "ghost"])
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["selected_count"] == 2
+    assert body["deleted_count"] == 1
+    by_key = {res["key"]: res for res in body["results"]}
+    assert by_key["k1"]["status"] == "deleted"
+    assert by_key["ghost"]["status"] == "not_found"
+    saved = json.loads(empty_state.read_text(encoding="utf-8"))["rows"]
+    assert saved == {}
+
+
+def test_duplicate_keys_in_the_batch_are_deduplicated(client, empty_state,
+                                                       no_buffer):
+    _seed_rows(empty_state, {"k1": {"status": cp.PENDING,
+                                    "row": {"post_text": "one"}}})
+    r = _batch_delete(client, "p", ["k1", "k1", "k1"])
+    body = r.get_json()
+    assert body["selected_count"] == 1
+    assert body["deleted_count"] == 1
+
+
+def test_an_empty_key_list_is_refused(client, empty_state, no_buffer):
+    r = _batch_delete(client, "p", [])
+    assert r.status_code == 400
+
+
+def test_keys_must_be_a_list_not_a_bare_string(client, empty_state, no_buffer):
+    r = client.post("/api/scheduled/p/rows/delete", json={"keys": "k1"})
+    assert r.status_code == 400
+
+
+def test_confirm_live_is_whitelisted_not_bare_truthiness(client, empty_state,
+                                                          no_buffer):
+    """`confirm_live: "false"` or `"no"` must NOT bypass the live-row guard -
+    Python truthiness would read either as True (a non-empty string), which
+    would defeat the one guard this endpoint exists to enforce."""
+    _seed_rows(empty_state, {
+        "k1": {"status": cp.SCHEDULED, "post_id": "p1",
+               "row": {"post_text": "live"}},
+    })
+    for bad_value in ("false", "no", "0", False, 0, None):
+        before = empty_state.read_bytes()
+        r = client.post("/api/scheduled/p/rows/delete",
+                        json={"keys": ["k1"], "confirm_live": bad_value})
+        assert r.status_code == 409, repr(bad_value)
+        assert empty_state.read_bytes() == before, repr(bad_value)
+
+    r = client.post("/api/scheduled/p/rows/delete",
+                    json={"keys": ["k1"], "confirm_live": True})
+    assert r.status_code == 200
+    assert json.loads(empty_state.read_text(encoding="utf-8"))["rows"] == {}
+
+
+# ─── Selection in the UI: structural checks (Dispatch 27.1) ─────────────────
+#
+# There is no JS runtime in this test suite - every check here reads the
+# TEMPLATE SOURCE, not a rendered, interactive page, the same limit every
+# other structural test in this module already lives with (see "Rendering:
+# the failure every API test missed" above). What makes these a real gate
+# rather than a rubber stamp is that each one encodes a SPECIFIC regression
+# this dispatch could reintroduce, and fails for that reason: resetting the
+# selection where it should only be pruned, pruning against the filtered view
+# instead of the whole response, or a checkbox that stops reading from the
+# selection set. A check that could not fail for any of those reasons would
+# not be worth having (PRINCIPLES.md #3).
+
+def _js_function(html, signature):
+    """The literal source of one JS function/arrow body, found by brace-
+    counting from its signature. Fragile only to minification - this
+    template is never minified."""
+    start = html.index(signature)
+    brace = html.index("{", start)
+    depth = 0
+    i = brace
+    while True:
+        c = html[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:i + 1]
+        i += 1
+
+
+def test_the_selection_set_is_declared_once_outside_the_load_function(client):
+    """Declared at module scope, not re-initialised inside loadScheduledQueue -
+    a `let schpSelected = new Set()` inside the load function would wipe the
+    selection on every render, which is the exact bug this dispatch exists to
+    avoid."""
+    html = client.get("/").get_data(as_text=True)
+    assert html.count("let schpSelected = new Set();") == 1
+
+    load_fn = _js_function(html, "async function loadScheduledQueue()")
+    assert "schpSelected = new Set()" not in load_fn
+    assert "schpPruneSelection(d)" in load_fn, (
+        "the load function must prune the selection, not reset it")
+
+
+def test_pruning_checks_membership_across_every_status_not_just_the_filtered_one(
+        client):
+    """If pruning read schpVisibleRows() instead of schpAllRows(), switching
+    the status filter would silently drop a selection the reconcile had just
+    moved into a different bucket - exactly the "survives reconcile" property
+    Dispatch 27.1 requires."""
+    html = client.get("/").get_data(as_text=True)
+    prune_fn = _js_function(html, "function schpPruneSelection(d)")
+    assert "schpAllRows(d)" in prune_fn
+    assert "schpVisibleRows" not in prune_fn
+
+
+def test_the_row_checkbox_is_painted_from_the_selection_set_not_the_dom(client):
+    """Selection -> checkbox is one-directional and reads schpSelected, so a
+    full table rebuild (schpRenderQueueBody, called on every load and every
+    filter change) restores the same checked state rather than defaulting
+    every box to unchecked."""
+    html = client.get("/").get_data(as_text=True)
+    row_fn = _js_function(html, "function schpRow(r)")
+    assert "schpSelected.has(r.key)" in row_fn
+    assert "onchange=\\'schpToggleSelect" in row_fn or \
+        "onchange=\"schpToggleSelect" in row_fn or \
+        'onchange="schpToggleSelect' in row_fn
+
+
+def test_toggling_a_checkbox_mutates_the_selection_set_directly(client):
+    html = client.get("/").get_data(as_text=True)
+    toggle_fn = _js_function(html, "function schpToggleSelect(key, checked)")
+    assert "schpSelected.add(key)" in toggle_fn
+    assert "schpSelected.delete(key)" in toggle_fn
+
+
+def test_select_all_and_invert_act_on_the_filtered_view_only(client):
+    """27.1: select-all applies to what is currently rendered, not the whole
+    file. Both read schpVisibleRows(), which schpApplyFilter narrows."""
+    html = client.get("/").get_data(as_text=True)
+    for sig in ("function schpSelectAllVisible()",
+               "function schpInvertVisible()"):
+        fn = _js_function(html, sig)
+        assert "schpVisibleRows(schpLastQueueData)" in fn
+
+
+def test_the_selection_bar_always_states_the_count_it_acts_on(client):
+    """27.1: 'the UI states the count it is acting on.' Never a bare number
+    that could mean either the selection or the visible set."""
+    html = client.get("/").get_data(as_text=True)
+    update_fn = _js_function(html, "function schpUpdateSelectionBar(d)")
+    assert "selected of" in update_fn
+    assert "shown" in update_fn
+
+
+def test_the_status_filter_control_is_present_and_feeds_select_all(client):
+    """27.3: a status filter reachable without clicking every checkbox."""
+    soup, html = _section(client)
+    section = soup.find(id="mode-scheduled")
+    assert section.find(id="schpStatusFilter") is not None
+    assert "schpApplyFilter" in html
+    assert "schpFilterStatus" in html
+
+
+def test_the_batch_delete_endpoint_is_reused_not_reimplemented(client):
+    """27.2: the batch route loops the existing delete_row via delete_rows -
+    confirmed at the source level, since csv_pipeline is the one place
+    deletion logic may live."""
+    import inspect
+    from linkedin_automation import csv_pipeline as csvp
+    src = inspect.getsource(csvp.delete_rows)
+    assert "delete_row(state, k)" in src
+    # And dashboard.py's route is a thin wrapper, not a second implementation.
+    dsrc = inspect.getsource(dashboard.scheduled_delete_rows_batch)
+    assert "csv_pipeline.delete_rows(" in dsrc
+    assert "state.rows.pop" not in dsrc, "deletion must not be reimplemented here"
