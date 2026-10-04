@@ -686,6 +686,72 @@ def delete_row(state, key):
     return entry
 
 
+def delete_rows(state, keys, confirm_live=False):
+    """Delete many rows in one call, looping :func:`delete_row`.
+
+    ALL-OR-NOTHING on the live-row guard: if any selected row has a real post
+    and ``confirm_live`` is not set, NOTHING is deleted - not even the
+    harmless rows in the same batch. The single-row DELETE route's
+    confirm_live rule (one live row needs an explicit, informed yes) must not
+    become bypassable by hiding a live row inside a larger selection that is
+    mostly safe.
+
+    Once past that gate, each row is deleted independently and a failure on
+    one key must not stop the rest: the loop reports per-key outcomes rather
+    than raising, so a batch of 20 with one bad key still removes the other
+    19 and says which one did not go, rather than stopping silently or
+    claiming success for the whole batch.
+
+    Returns ``(results, live_without_confirm)``:
+
+    * ``live_without_confirm`` - ``[{key, post_id}, ...]`` for every row that
+      blocked the whole batch. Empty when nothing was blocked.
+    * ``results`` - ``[{key, status, had_post, post_id, error}, ...]``, one
+      entry per unique key, ``status`` one of ``"deleted"``, ``"not_found"``
+      or ``"error"``. Empty when the batch was blocked by the guard above -
+      a blocked batch has no outcomes to report because nothing ran.
+
+    Duplicate keys in ``keys`` are deduplicated, order preserved; deleting the
+    same key twice would mean nothing.
+    """
+    seen = []
+    for k in keys:
+        if k not in seen:
+            seen.append(k)
+
+    if not confirm_live:
+        live = [{"key": k, "post_id": state.get(k).get("post_id")}
+                for k in seen if k in state.rows and state.has_post(k)]
+        if live:
+            return [], live
+
+    results = []
+    for k in seen:
+        if k not in state.rows:
+            results.append({"key": k, "status": "not_found", "had_post": False,
+                            "post_id": None,
+                            "error": "no such row in the queue"})
+            continue
+        had_post = state.has_post(k)
+        post_id = state.get(k).get("post_id")
+        try:
+            removed = delete_row(state, k)
+        except Exception as exc:
+            results.append({"key": k, "status": "error", "had_post": had_post,
+                            "post_id": post_id, "error": str(exc)})
+            continue
+        if removed is None:
+            # Raced with something else that deleted it first, between the
+            # membership check above and this call.
+            results.append({"key": k, "status": "not_found",
+                            "had_post": had_post, "post_id": post_id,
+                            "error": "no such row in the queue"})
+            continue
+        results.append({"key": k, "status": "deleted", "had_post": had_post,
+                        "post_id": post_id, "error": None})
+    return results, []
+
+
 #: Rows worth asking Buffer about. A row Buffer has already published tells us
 #: nothing new on a second look, and a row with no post id has nothing to look
 #: up - so neither is ever re-polled.
