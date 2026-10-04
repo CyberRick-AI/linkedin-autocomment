@@ -1911,6 +1911,77 @@ def scheduled_delete_row(profile_name, key):
     })
 
 
+@app.route('/api/scheduled/<profile_name>/rows/delete', methods=['POST'])
+def scheduled_delete_rows_batch(profile_name):
+    """POST - remove many rows from OUR queue in one call.
+
+    Loops csv_pipeline.delete_row per key via csv_pipeline.delete_rows; no
+    deletion logic is reimplemented here (Dispatch 27).
+
+    The single-row confirm_live rule carries over to the WHOLE batch: if any
+    selected row has a live post and confirm_live is not set, nothing in the
+    batch is deleted - not even the harmless rows alongside it. That is what
+    keeps a bulk click from quietly taking out a live post's record because
+    it was hiding in a long selection nobody individually confirmed.
+
+    Past that gate, a failure on one key does not stop the rest: the response
+    always carries both the selected count and the deleted count, plus a
+    per-key result, so a partial batch is reported as partial rather than
+    silently short or falsely claimed complete.
+    """
+    try:
+        platform = _req_platform()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    body = request.get_json(silent=True) or {}
+    keys = body.get("keys")
+    if not isinstance(keys, list) or not keys:
+        return jsonify({"error": "keys must be a non-empty list of row keys"}), 400
+    if not all(isinstance(k, str) and k for k in keys):
+        return jsonify({"error": "every key must be a non-empty string"}), 400
+
+    # Whitelisted, not bare truthiness: this flag is what stands between a
+    # bulk click and a live post's record. Python truthiness would read a
+    # JSON string like "false" or "no" as True (non-empty string), silently
+    # defeating the one guard this whole endpoint exists to enforce. Mirrors
+    # the single-row DELETE route's own whitelist, extended to accept a real
+    # JSON boolean from the body as well as the string forms.
+    raw_confirm = body.get("confirm_live")
+    confirmed = (raw_confirm is True or
+                str(raw_confirm).strip().lower() in ("1", "true", "yes") or
+                request.args.get("confirm_live") in ("1", "true", "yes"))
+
+    state = csv_pipeline.PipelineState(profile_name=profile_name,
+                                       platform=platform)
+    results, live_without_confirm = csv_pipeline.delete_rows(
+        state, keys, confirm_live=confirmed)
+
+    if live_without_confirm:
+        selected = len(set(keys))
+        return jsonify({
+            "error": "%d of %d selected row(s) have a live Buffer post. "
+                     "Nothing was deleted - this only ever removes OUR "
+                     "record, and the live post(s) stay scheduled or "
+                     "published either way. Re-send with confirm_live=true "
+                     "to remove all selected records, the live ones "
+                     "included." % (len(live_without_confirm), selected),
+            "live_count": len(live_without_confirm),
+            "live_rows": live_without_confirm,
+            "selected_count": selected,
+            "deleted_count": 0,
+            "results": [],
+        }), 409
+
+    deleted = [r for r in results if r["status"] == "deleted"]
+    return jsonify({
+        "ok": len(deleted) == len(results),
+        "selected_count": len(results),
+        "deleted_count": len(deleted),
+        "results": results,
+    })
+
+
 # ─── Scheduler ────────────────────────────────────────────────────────────────
 # The scheduler runs its own actions through run_job / the browser lock, exactly
 # like a manual click. These executor callbacks are the only coupling; the engine

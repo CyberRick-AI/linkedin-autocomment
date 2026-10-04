@@ -1641,6 +1641,25 @@ header {
       <div id="schpScheduleResult" style="margin-bottom:0.6rem"></div>
       <div class="lifecycle-bar" id="schpCounts" style="display:flex;gap:0.5rem;
            flex-wrap:wrap;margin-bottom:0.75rem"></div>
+
+      <!-- Filter first, then select-all acts on the filtered view - so
+           "select all PENDING" is one dropdown click plus one button, not 50
+           checkboxes. Selection itself lives in schpSelected (JS, module
+           scope), not in the DOM, so a Refresh or a status change after
+           scheduling can rebuild this table without losing it. -->
+      <div id="schpSelectionBar" style="display:flex;gap:0.5rem;align-items:center;
+           flex-wrap:wrap;margin-bottom:0.6rem">
+        <select class="input" id="schpStatusFilter" style="max-width:220px"
+                onchange="schpApplyFilter(this.value)">
+          <option value="">All statuses</option>
+        </select>
+        <button class="btn btn-sm" onclick="schpSelectAllVisible()">Select all</button>
+        <button class="btn btn-sm" onclick="schpSelectNoneVisible()">Select none</button>
+        <button class="btn btn-sm" onclick="schpInvertVisible()">Invert</button>
+        <span style="font-size:0.78rem;color:var(--text-dim)" id="schpSelCount">0 shown</span>
+        <button class="btn btn-danger btn-sm" id="schpDeleteSelectedBtn" disabled
+                onclick="schpDeleteSelected()">Delete selected</button>
+      </div>
       <div id="schpQueue"></div>
     </div>
 
@@ -1761,6 +1780,13 @@ function switchProfile() {
   postsData = { posts: [], file: null };
   commentsData = { comments: [], file: null };
   postQueue = [];
+
+  // A selection is keys into THIS profile's scheduled_posts_state.json - keys
+  // from the old profile are foreign to the new one and would just resolve
+  // to "not found" if acted on, but there is no reason to let a bulk-delete
+  // selection silently ride across a profile switch at all.
+  schpSelected = new Set();
+  schpLastQueueData = null;
 
   loadExistingPosts();
   loadExistingComments();
@@ -2834,6 +2860,29 @@ let schpPlatform = 'linkedin';
 // no comment step and no browser.
 let schpFirstComment = true;
 
+// ─── Queue selection (Dispatch 27) ──────────────────────
+//
+// Module-scope, deliberately OUTSIDE loadScheduledQueue(). The table is
+// rebuilt on every Refresh, after every action, and after the server's own
+// reconcile-on-render moves rows between statuses - if selection lived in the
+// DOM (checkbox state) or was reset at the top of loadScheduledQueue(), every
+// one of those would silently clear it, which is what would make a bulk
+// delete useless for anything but a single screen. Instead schpSelected is
+// the source of truth and schpRow() reads it when painting each checkbox;
+// loadScheduledQueue() only PRUNES it (schpPruneSelection), dropping a key
+// when the row it names is actually gone from the server's response - a
+// status change (e.g. SCHEDULED -> PUBLISHED from the reconcile) moves a key
+// between buckets but never drops it, so it stays selected.
+let schpSelected = new Set();
+// '' = no filter (every status shown). Select-all/none/invert all act on
+// schpVisibleRows(), i.e. whatever this filter currently lets through.
+let schpFilterStatus = '';
+// The last successful /queue payload, kept so a filter change can re-render
+// instantly without spending another request (and without re-running the
+// server's reconcile, which is cache-bounded to 120s anyway - see
+// _RECONCILE_TTL_SECONDS in dashboard.py).
+let schpLastQueueData = null;
+
 function schpQ(url) {
   // Every read carries the platform, so the queue, the preflight and the
   // reconcile all answer for the SAME account the header names.
@@ -2973,9 +3022,19 @@ function schpRow(r) {
     (r.has_post ? 'true' : 'false') + ',\'' + schpEsc(r.post_id || '') + '\')">' +
     'Delete</button>';
 
+  // Selection state lives in schpSelected, not in the checkbox's DOM state -
+  // this just paints whatever that set already says, so a re-render (filter
+  // change, reconcile) that repaints this row restores it from the same place
+  // every time.
+  const check = '<input type="checkbox" class="schp-check" ' +
+    'title="Select this row" style="margin-top:0.15rem;cursor:pointer" ' +
+    (schpSelected.has(r.key) ? 'checked ' : '') +
+    'onchange="schpToggleSelect(\'' + r.key + '\', this.checked)">';
+
   return '<div style="padding:0.7rem 0.85rem;border:1px solid var(--border);' +
     'border-radius:8px;margin-bottom:0.5rem;background:var(--panel)">' +
     '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start">' +
+      check +
       img.thumb +
       '<div style="flex:1;min-width:0">' +
         '<div style="font-size:0.86rem;line-height:1.45">' +
@@ -3297,25 +3356,191 @@ async function loadScheduledQueue() {
         schpEsc(label) + ' ' + n + '</span>';
     }).join('');
 
-    if (!d.total) {
-      box.innerHTML = '<div style="color:var(--text-dim);padding:1rem 0">' +
-        'Nothing queued yet.</div>';
-      return;
+    // The status filter's options, from the same server-given order/labels
+    // the chips use - never a hand-kept list that could drift from the real
+    // statuses. The currently-chosen filter is preserved across a reload.
+    const filterSel = document.getElementById('schpStatusFilter');
+    if (filterSel) {
+      filterSel.innerHTML = '<option value="">All statuses</option>' +
+        d.order.map(st => '<option value="' + schpEsc(st) + '"' +
+          (st === schpFilterStatus ? ' selected' : '') + '>' +
+          schpEsc((d.labels && d.labels[st]) || st) + ' (' + (d.counts[st] || 0) +
+          ')</option>').join('');
     }
-    let html = '';
-    d.order.forEach(st => {
-      const rows = d.posts[st] || [];
-      if (!rows.length) return;
-      const lbl = (d.labels && d.labels[st]) || st;
-      const mn = (d.meanings && d.meanings[st]) ? ' — ' + schpEsc(d.meanings[st]) : '';
-      html += '<div style="margin:0.9rem 0 0.4rem;font-size:0.78rem;' +
-        'color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em">' +
-        schpEsc(lbl) + ' (' + rows.length + ')' + mn + '</div>';
-      html += rows.map(schpRow).join('');
-    });
-    box.innerHTML = html;
+
+    schpLastQueueData = d;
+    // Prune, never reset: a key drops out of the selection only when the row
+    // it names is actually gone from what the server just returned. A status
+    // move (e.g. the reconcile above turning SCHEDULED into PUBLISHED) keeps
+    // the key - it just appears in a different bucket - so selection survives
+    // exactly the re-render this function performs on every load.
+    schpPruneSelection(d);
+    schpRenderQueueBody(d);
   } catch (e) {
     box.innerHTML = '<div style="color:#ff8080">' + schpEsc(e.message) + '</div>';
+  }
+}
+
+// All rows across every status bucket, flattened. The one place that knows
+// how to walk `d.posts` by `d.order`, so selection pruning, "visible rows"
+// and the delete confirmation's live-row lookup cannot drift from each other.
+function schpAllRows(d) {
+  const out = [];
+  (d && d.order || []).forEach(st => (d.posts[st] || []).forEach(r => out.push(r)));
+  return out;
+}
+
+// Only what the current status filter lets through. Select-all/none/invert
+// all act on exactly this set, per Dispatch 27.1: "select-all applies to what
+// is currently rendered, not the whole file".
+function schpVisibleRows(d) {
+  if (!schpFilterStatus) return schpAllRows(d);
+  return (d && d.posts[schpFilterStatus]) || [];
+}
+
+function schpPruneSelection(d) {
+  const live = new Set(schpAllRows(d).map(r => r.key));
+  for (const k of Array.from(schpSelected)) {
+    if (!live.has(k)) schpSelected.delete(k);
+  }
+}
+
+function schpRenderQueueBody(d) {
+  const box = document.getElementById('schpQueue');
+  if (!d.total) {
+    box.innerHTML = '<div style="color:var(--text-dim);padding:1rem 0">' +
+      'Nothing queued yet.</div>';
+    schpUpdateSelectionBar(d);
+    return;
+  }
+  let html = '';
+  d.order.forEach(st => {
+    if (schpFilterStatus && st !== schpFilterStatus) return;
+    const rows = d.posts[st] || [];
+    if (!rows.length) return;
+    const lbl = (d.labels && d.labels[st]) || st;
+    const mn = (d.meanings && d.meanings[st]) ? ' — ' + schpEsc(d.meanings[st]) : '';
+    html += '<div style="margin:0.9rem 0 0.4rem;font-size:0.78rem;' +
+      'color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em">' +
+      schpEsc(lbl) + ' (' + rows.length + ')' + mn + '</div>';
+    html += rows.map(schpRow).join('');
+  });
+  box.innerHTML = html || ('<div style="color:var(--text-dim);padding:1rem 0">' +
+    'No rows match this filter.</div>');
+  schpUpdateSelectionBar(d);
+}
+
+// The count line and the delete button's enabled state. Always states the
+// count it is about to act on, per 27.1 - "N selected of M shown", never a
+// bare number that could mean either.
+function schpUpdateSelectionBar(d) {
+  const countEl = document.getElementById('schpSelCount');
+  const delBtn = document.getElementById('schpDeleteSelectedBtn');
+  const visible = d ? schpVisibleRows(d).length : 0;
+  const n = schpSelected.size;
+  if (countEl) {
+    countEl.textContent = n ? (n + ' selected of ' + visible + ' shown')
+                            : (visible + ' shown');
+  }
+  if (delBtn) delBtn.disabled = n === 0;
+}
+
+function schpToggleSelect(key, checked) {
+  if (checked) schpSelected.add(key); else schpSelected.delete(key);
+  schpUpdateSelectionBar(schpLastQueueData);
+}
+
+function schpApplyFilter(value) {
+  schpFilterStatus = value || '';
+  if (schpLastQueueData) schpRenderQueueBody(schpLastQueueData);
+}
+
+function schpSelectAllVisible() {
+  if (!schpLastQueueData) return;
+  schpVisibleRows(schpLastQueueData).forEach(r => schpSelected.add(r.key));
+  schpRenderQueueBody(schpLastQueueData);
+}
+
+function schpSelectNoneVisible() {
+  if (!schpLastQueueData) return;
+  schpVisibleRows(schpLastQueueData).forEach(r => schpSelected.delete(r.key));
+  schpRenderQueueBody(schpLastQueueData);
+}
+
+function schpInvertVisible() {
+  if (!schpLastQueueData) return;
+  schpVisibleRows(schpLastQueueData).forEach(r => {
+    if (schpSelected.has(r.key)) schpSelected.delete(r.key);
+    else schpSelected.add(r.key);
+  });
+  schpRenderQueueBody(schpLastQueueData);
+}
+
+// Deleting N rows removes OUR RECORDS. Mirrors schpDeleteRow's confirmation
+// rule (Dispatch 27.2), batched: if ANY selected row is live, the dialog
+// names how many before asking, and a yes sends confirm_live for the WHOLE
+// batch - the server itself refuses a partial confirm (csv_pipeline.delete_rows:
+// any live row without confirm_live blocks every delete in the call, not just
+// its own).
+async function schpDeleteSelected() {
+  const keys = Array.from(schpSelected);
+  if (!keys.length) return;
+
+  const index = {};
+  if (schpLastQueueData) {
+    schpAllRows(schpLastQueueData).forEach(r => { index[r.key] = r; });
+  }
+  const liveCount = keys.filter(k => index[k] && index[k].has_post).length;
+
+  let confirmLive = false;
+  if (liveCount) {
+    const ok = confirm(
+      liveCount + ' of ' + keys.length + ' selected row(s) have a LIVE ' +
+      'Buffer post.\n\nDeleting them here removes only OUR record of each. ' +
+      'Those posts stay scheduled or published - this does NOT unschedule ' +
+      'or unpublish anything.\n\nRemove records for all ' + keys.length +
+      ' selected row(s), live ones included?');
+    if (!ok) return;
+    confirmLive = true;
+  } else if (!confirm('Remove ' + keys.length + ' row(s) from the queue?')) {
+    return;
+  }
+
+  const out = document.getElementById('schpScheduleResult');
+  out.innerHTML = '<div style="color:var(--text-dim)">Deleting ' + keys.length +
+    ' row(s)…</div>';
+  // A reload always runs in `finally`, including on a 409/error response -
+  // that refusal usually means the client's view was stale (e.g. a row went
+  // live between page load and this click), and the fix for staleness is a
+  // fresh read, not leaving the table as it was.
+  try {
+    const res = await fetch(schpQ(`/api/scheduled/${currentProfile}/rows/delete`), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({keys: keys, confirm_live: confirmLive}),
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      out.innerHTML = '<div class="error-box">' + schpEsc(d.error ||
+        'batch delete failed') + '</div>';
+      return;
+    }
+    const failed = (d.results || []).filter(r => r.status !== 'deleted');
+    (d.results || []).forEach(r => {
+      if (r.status === 'deleted') schpSelected.delete(r.key);
+    });
+    let msg = 'Deleted ' + d.deleted_count + ' of ' + d.selected_count +
+      ' selected row(s).';
+    if (failed.length) {
+      msg += ' ' + failed.length + ' did not delete:<br>' +
+        failed.map(r => '&middot; ' + schpEsc(r.key) + ': ' + schpEsc(r.status) +
+          (r.error ? ' (' + schpEsc(r.error) + ')' : '')).join('<br>');
+    }
+    out.innerHTML = '<div style="font-size:0.85rem' +
+      (failed.length ? ';color:#ffcc66' : '') + '">' + msg + '</div>';
+  } catch (e) {
+    out.innerHTML = '<div class="error-box">' + schpEsc(String(e)) + '</div>';
+  } finally {
+    await loadScheduledQueue();
   }
 }
 
