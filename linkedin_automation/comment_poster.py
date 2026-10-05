@@ -84,32 +84,54 @@ class LinkedInCommentPoster:
     # (the hover reaction pickers), and clicking one of those opens a menu
     # instead of liking.
     #
-    # The three selectors below it are the previous generation. All three match
-    # ZERO on the current DOM - they are kept as fallbacks per MAINTENANCE.md
-    # step 4, which is only affordable because the lookup is now bounded in
-    # TOTAL rather than per selector.
+    # MEASURED 2026-10-03 (MAINTENANCE §6.9): the unliked label drifted to
+    # "Reaction button state: no reaction" (button text is still "Like").
+    # New hook FIRST, per MAINTENANCE step 4 - nothing below it deleted. The
+    # old "...state: Like" shape and the two previous-generation selectors
+    # after it stay as fallbacks, affordable because the lookup is bounded in
+    # TOTAL (`LIKE_WAIT_SECONDS`, 3s), not per selector.
     LIKE_BUTTON_SELECTORS = [
+        "button[aria-label='Reaction button state: no reaction']",
         "button[aria-label='Reaction button state: Like']",
         "button[aria-label*='Like'][aria-pressed='false']",
         "button.react-button__trigger:not(.react-button__trigger--active)",
         "button[data-control-name='like_toggle']",
     ]
 
-    # Already reacted. The same control reports a DIFFERENT state in its
-    # aria-label once a reaction is applied ("... : Liked", "... : Celebrate",
-    # and so on), so anything in that family which is not the plain "Like"
-    # state means the post has already been reacted to.
+    # Already reacted - POSITIVE proof only (Dispatch 25). This used to be a
+    # NEGATION ("anything in the `Reaction button state:` family that is not
+    # the literal unliked label"), which silently classified LinkedIn's own
+    # 2026-10-03 unliked-label drift ("...state: no reaction") as already
+    # liked on every post in a live batch - the already-liked branch returned
+    # True with no evidence, so the Like was skipped and nothing noticed
+    # (MAINTENANCE §6.9). A negation here can ONLY ever repeat that failure:
+    # any future unseen label reads as liked by construction.
     #
-    # No capture of a liked post exists yet, so this is inference from the
-    # unliked shape rather than an observation - it is a non-critical path
-    # (worst case we try to like an already-liked post and the click no-ops),
-    # and it is marked so nobody reads it as verified.
+    # So this is now a list of KNOWN reacted-state labels. A label not in
+    # this list and not the unliked shape above is UNKNOWN - handled in
+    # like_post() as a miss (logged, counted, captured), never as
+    # already-liked. No capture of a genuinely liked post exists yet, so
+    # these remain inferred from LinkedIn's documented reaction set, not
+    # observed - the same caveat MAINTENANCE §6.8 already carries for this
+    # whole branch. It is still safe to be wrong in the false-miss direction:
+    # liking is non-critical, and worst case is a redundant Like attempt on
+    # an already-liked post.
     LIKED_STATE_SELECTORS = [
-        "button[aria-label^='Reaction button state:']"
-        ":not([aria-label='Reaction button state: Like'])",
+        "button[aria-label='Reaction button state: Liked']",
+        "button[aria-label='Reaction button state: Celebrate']",
+        "button[aria-label='Reaction button state: Support']",
+        "button[aria-label='Reaction button state: Love']",
+        "button[aria-label='Reaction button state: Insightful']",
+        "button[aria-label='Reaction button state: Funny']",
+        "button[aria-label='Reaction button state: Curious']",
         "button[aria-label*='Like'][aria-pressed='true']",
         "button.react-button__trigger--active",
     ]
+
+    # ANY reaction-state button present, known or not. Diagnostic ONLY - never
+    # used to decide a verdict, only to enrich an UNKNOWN miss's capture with
+    # the real aria-label the next repair needs (Dispatch 25).
+    ANY_REACTION_STATE_SELECTOR = "button[aria-label^='Reaction button state:']"
 
     # The action-bar button that OPENS the comment box. Distinct from the submit
     # button below — see SUBMIT_BUTTON_XPATH for why that distinction matters.
@@ -201,6 +223,7 @@ class LinkedInCommentPoster:
         self.run_timing = None
         self.last_comment_timing = None
         self.like_misses = 0
+        self._last_like_button_selector = None
 
     # ─── Timing (Dispatch 15.1) ──────────────────────────────────────────────
 
@@ -651,12 +674,18 @@ class LinkedInCommentPoster:
     LIKE_POLL_SECONDS = 0.25
 
     def find_like_button(self, timeout=None):
-        """The first clickable Like control, or None. Bounded in TOTAL."""
+        """The first clickable Like control, or None. Bounded in TOTAL.
+
+        Also records which selector matched on ``_last_like_button_selector``
+        (None on a miss) - the "condition that decided the verdict" for the
+        placed-outcome capture in ``like_post``.
+        """
         declared = self.LIKE_WAIT_SECONDS if timeout is None else timeout
         started = time.time()
-        found = self._find_like_button_loop(declared)
+        found, selector = self._find_like_button_loop(declared)
         self._poll_done("find_like_button", declared, started,
                         "found" if found is not None else "not_found")
+        self._last_like_button_selector = selector
         return found
 
     def _find_like_button_loop(self, timeout):
@@ -666,12 +695,25 @@ class LinkedInCommentPoster:
                 try:
                     for el in self.driver.find_elements(By.CSS_SELECTOR, selector):
                         if el.is_displayed() and el.is_enabled():
-                            return el
+                            return el, selector
                 except Exception:
                     continue
             if time.time() >= deadline:
-                return None
+                return None, None
             time.sleep(self.LIKE_POLL_SECONDS)
+
+    def _find_unrecognised_reaction_element(self):
+        """A reaction-state button present that is neither the unliked shape
+        (``LIKE_BUTTON_SELECTORS``) nor a known reacted state
+        (``LIKED_STATE_SELECTORS``) - the UNKNOWN case (Dispatch 25). The
+        first such element, or None. Diagnostic only - never decides a
+        verdict, and never raises."""
+        try:
+            elements = self.driver.find_elements(
+                By.CSS_SELECTOR, self.ANY_REACTION_STATE_SELECTOR)
+        except Exception:
+            return None
+        return elements[0] if elements else None
 
     def like_post(self) -> bool:
         """Like the current post."""
@@ -679,15 +721,29 @@ class LinkedInCommentPoster:
             like_button = self.find_like_button()
 
             if not like_button:
-                # Check if already liked
-                liked_selectors = self.LIKED_STATE_SELECTORS
-
-                for selector in liked_selectors:
-                    if self.driver.find_elements(By.CSS_SELECTOR, selector):
+                # Positive proof of a KNOWN reaction state only (Dispatch 25).
+                for selector in self.LIKED_STATE_SELECTORS:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
                         self.logger.info("Post already liked")
+                        self.note_like_state("already_liked", selector, elements[0])
                         return True
 
-                self.note_like_miss("like button not found")
+                # Neither the unliked shape nor a known reaction - UNKNOWN,
+                # never already-liked. A miss: logged, counted, captured,
+                # and (like every miss) it never halts commenting. If a
+                # reaction-state button is present with some OTHER label,
+                # capture it - that is exactly the evidence the next repair
+                # needs to recognise the new shape.
+                unknown = self._find_unrecognised_reaction_element()
+                if unknown is not None:
+                    label = self._describe_element(unknown).get("aria_label")
+                    self.note_like_miss("unrecognised reaction label: %r" % label)
+                    self.note_like_state("miss", "unrecognised_reaction_label",
+                                         unknown)
+                else:
+                    self.note_like_miss("like button not found")
+                    self.note_like_state("miss", None, None)
                 return False
 
             # Click like button with a natural mouse approach + click.
@@ -695,11 +751,14 @@ class LinkedInCommentPoster:
             hb.human_sleep(1.2, 2.4)
 
             self.logger.info("✅ Post liked successfully")
+            self.note_like_state("placed", self._last_like_button_selector,
+                                 like_button)
             return True
 
         except Exception as e:
             self.logger.error(f"Error liking post: {e}")
             self.note_like_miss("error: %s" % e)
+            self.note_like_state("miss", None, None)
             return False
 
     # ─── A Like miss is soft, but LOUD (Dispatch 15.2) ───────────────────────
@@ -800,6 +859,76 @@ class LinkedInCommentPoster:
                            self.LIKED_STATE_SELECTORS)})
         except Exception:
             self.logger.debug("like-miss capture failed", exc_info=True)
+
+    # ─── Every like verdict needs positive proof (Dispatch 24) ───────────────
+    #
+    # The already-liked branch above used to return True with no evidence at
+    # all. On 2026-09-24, four posts the tool had never touched all reported
+    # "already liked" after the Like poll found nothing - and because that
+    # branch captured nothing, there was no way to tell a correct read (the
+    # post really was already reacted to, MAINTENANCE §6.8's unverified
+    # LIKED_STATE_SELECTORS doing its job) from a miss that was simply
+    # misclassified and so bypassed note_like_miss's capture entirely.
+    #
+    # This instruments all THREE outcomes - placed, miss, already_liked -
+    # uniformly: which condition decided the verdict, and the deciding
+    # element's aria-label/aria-pressed/class. It is deliberately separate
+    # from note_like_miss, which stays unconditional and loud (Dispatch 15.2):
+    # that capture exists so a dead Like selector is never silent. This one is
+    # for a deliberate capture session, not every run - routinely writing a
+    # screenshot/DOM/JSON triple for every single ordinary "placed" like would
+    # be noise - so it is flag-gated, default OFF.
+    LIKE_STATE_CAPTURE = False
+
+    def _describe_element(self, element):
+        """aria-label / aria-pressed / class of the element a verdict was
+        decided from, or None when no element decided it (a miss). Never
+        raises - a stale element reads as an error entry, not a crash."""
+        if element is None:
+            return None
+        try:
+            return {
+                "aria_label": element.get_attribute("aria-label"),
+                "aria_pressed": element.get_attribute("aria-pressed"),
+                "class": (element.get_attribute("class") or "")[:200],
+            }
+        except Exception:
+            return {"error": "element went stale while reading"}
+
+    def note_like_state(self, outcome, decided_by, element):
+        """Capture evidence for the like verdict, behind LIKE_STATE_CAPTURE.
+
+        ``outcome`` is one of "placed", "miss", "already_liked". ``decided_by``
+        is the selector (or None, for a miss) that matched. Never raises.
+        """
+        if not self.LIKE_STATE_CAPTURE:
+            return
+        try:
+            self._report_like_state(outcome, decided_by, element)
+        except Exception:
+            self.logger.debug("like-state report failed", exc_info=True)
+
+    def _report_like_state(self, outcome, decided_by, element):
+        timing = getattr(self, "_timing", None)
+        post = timing.post_id if timing is not None else None
+        if post is None:
+            try:
+                post = self.post_identity(self.driver.current_url) or \
+                    self.driver.current_url
+            except Exception:
+                post = "-"
+        deciding_element = self._describe_element(element)
+        self.logger.info(
+            "LIKE STATE post=%s outcome=%s decided_by=%s element=%s",
+            post, outcome, decided_by, deciding_element)
+        capture_failure(self.driver, "like_state", self.profile_name,
+                        page_source=True)
+        region, buttons = self.like_region_buttons()
+        capture_like_state(
+            self.driver, "like_state", self.profile_name, buttons,
+            region=region,
+            extra={"outcome": outcome, "post": post, "decided_by": decided_by,
+                   "deciding_element": deciding_element})
 
     def open_comment_box(self) -> Optional:
         """Open the comment box and return the input element."""

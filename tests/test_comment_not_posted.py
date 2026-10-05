@@ -1228,9 +1228,15 @@ def test_an_already_liked_post_is_recognised(poster):
 def test_the_old_dead_selectors_are_kept_as_fallbacks(poster):
     """MAINTENANCE step 4: new hooks first, old ones after.
 
+    Dispatch 25 moved the unliked label from "...state: Like" to the
+    measured "...state: no reaction" shape, at the FRONT - the old label
+    stays right behind it, not deleted, per step 4.
+
     Affordable only because the wait is now bounded in total.
     """
     assert poster.LIKE_BUTTON_SELECTORS[0] == \
+        "button[aria-label='Reaction button state: no reaction']"
+    assert poster.LIKE_BUTTON_SELECTORS[1] == \
         "button[aria-label='Reaction button state: Like']"
     assert any("aria-pressed='false'" in s for s in poster.LIKE_BUTTON_SELECTORS)
 

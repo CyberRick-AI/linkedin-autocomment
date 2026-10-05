@@ -421,11 +421,130 @@ affordable because the lookup is bounded in **total** (`LIKE_WAIT_SECONDS`,
 could not like.
 
 **Already liked.** A reacted post carries a different state in the same
-`aria-label` (`… : Liked`, `… : Celebrate`, …), so `LIKED_STATE_SELECTORS` is
-"any `Reaction button state:` label that is not the plain `Like`". **This is
-inferred from the unliked shape; no capture of a liked post exists.** It is safe
-to be wrong here: liking is non-critical, and a failed like logs a warning and
-the comment proceeds.
+`aria-label` (`… : Liked`, `… : Celebrate`, …), so `LIKED_STATE_SELECTORS` lists
+the known reacted-state labels. **This used to be a negation** ("any
+`Reaction button state:` label that is not the plain `Like`") — see §6.9 for
+why that was retired. It is safe to be wrong in the false-miss direction:
+liking is non-critical, and a failed like logs a warning and the comment
+proceeds.
+
+**Every verdict can be captured, not just a miss (Dispatch 24).** The
+already-liked branch above used to `return True` with zero evidence — so a
+genuine miss that happened to match `LIKED_STATE_SELECTORS` (the unverified
+selector just above) was indistinguishable from a correct already-liked read.
+On 2026-09-24 four posts the tool had never touched all reported "already
+liked" after the Like poll found nothing, with nothing captured to tell the
+two cases apart. `LinkedInCommentPoster.LIKE_STATE_CAPTURE` (default `False`)
+turns on a capture for **all three** outcomes — placed, miss, already_liked —
+writing `failure_like_state_<ts>.png` / `.html` / `_likedom.json` (same shape
+as the always-on `like_miss` capture below) with `outcome`, `decided_by` (the
+selector that matched, or `None` for a miss) and `deciding_element`
+(aria-label/aria-pressed/class, or `None` for a miss). It is additive to, and
+does not replace, the unconditional `like_miss` capture (§6.8's own miss path
+stays loud and unconditional per Dispatch 15.2) — turn it on for a deliberate
+capture session when the already-liked classification itself is in question,
+not as a routine setting.
+
+### 6.9 MEASURED 2026-10-03: the unliked label drifted, and a negation turned the drift into a false already-liked
+
+`LIKE_STATE_CAPTURE` (§6.8 above) did exactly what it was built for on its
+first live use. A batch of 3 against the `dev` profile
+(`data/dev/failures/failure_like_state_20261003_124153` and two siblings,
+all three identical in shape) showed every post resolving `already_liked`
+from:
+
+```
+decided_by: button[aria-label^='Reaction button state:']:not([aria-label='Reaction button state: Like'])
+deciding_element:
+  aria_label: "Reaction button state: no reaction"
+  aria_pressed: null
+  class: "ckymnz ckymny ckyr4 ckya1f ckygkk ckymew ckyme8 ckymn3 ckymn1 ckymn0 ckya2t ckyidz ckyjz7"
+```
+
+The decoy (`aria-label="Open reactions menu"`) in the same capture's
+`action_bar_buttons` list reads `"displayed": false` — it is the hidden
+hover-reveal picker, not a second visible candidate, so it was never what
+decided this.
+
+**Opened one of the three posts live in a fresh browser session (read-only —
+navigate, scroll the Like button into view, screenshot; no click) and
+confirmed it was NOT liked:** the current DOM still reads
+`aria-label="Reaction button state: no reaction"`, and the screenshot shows
+the ordinary unfilled "Like" icon, not LinkedIn's blue filled "Liked"
+rendering. **LinkedIn's unliked-state label has drifted from
+`"Reaction button state: Like"` to `"Reaction button state: no reaction"`;
+the button's visible TEXT is still "Like".**
+
+**Why the old selector shape made this a false already-liked, not just a
+miss.** `LIKE_BUTTON_SELECTORS` matched only the exact unliked label, so the
+drift alone would have been a plain, survivable miss. What turned it into a
+silently-skipped Like on every post was `LIKED_STATE_SELECTORS` being a
+**negation** — "any `Reaction button state:` label that is not literally
+`...state: Like`" — which by construction treats every future label it has
+not seen as a reaction. A negation like that can only ever repeat this
+failure: the next drift, whatever it says, reads as liked too.
+
+**The fix (Dispatch 25) is positive proof, not a wider negation.**
+`LIKE_BUTTON_SELECTORS` gained the measured `"...state: no reaction"` shape
+at the FRONT, per step 4 above — the old `"...state: Like"` entry stays
+right behind it, not deleted. `LIKED_STATE_SELECTORS` is no longer a
+negation: it is now a list of KNOWN reacted-state labels (`Liked`,
+`Celebrate`, `Support`, `Love`, `Insightful`, `Funny`, `Curious` — LinkedIn's
+documented reaction set; only `Liked` carries the same inferred-not-observed
+caveat as the rest of this section, since no capture of a genuinely liked
+post exists yet). **A label that is neither the unliked shape nor a known
+reacted label is UNKNOWN** — `like_post()` routes it through the same miss
+path as "no Like control found at all": logged, counted
+(`poster.like_misses`), captured, and it never halts commenting. The
+diagnostic-only `ANY_REACTION_STATE_SELECTOR` probe enriches that capture
+with the real unrecognised label when one is present, so the next repair
+reads it straight off the capture instead of guessing.
+
+The asymmetry is deliberate, the same one §6.5's comment verifier and §7.3's
+`UNCLEAR` outcome both use: a false miss costs one redundant Like attempt on
+an already-liked post (harmless, non-critical); a false already-liked costs
+a silently skipped Like with no evidence anyone could have found before this
+section existed.
+
+**MEASURED 2026-10-05 — the two labels, stated plainly.** The paragraphs
+above describe the drift but never say outright which label means which
+state. Two independent live batches against the `dev` profile, each followed
+by a read-only fresh-browser check (new session, no click, aria-label read
+plus a screenshot) confirm both ends:
+
+| State | `aria-label` |
+|---|---|
+| **Unliked** (never reacted) | `Reaction button state: no reaction` |
+| **Liked** | `Reaction button state: Like` |
+
+The unliked label was confirmed 2026-10-03
+(`failure_like_state_20261003_124153` and siblings, plus a fresh-browser
+read matching it). The liked label was confirmed twice: a 2026-10-03 batch
+captured it post-click (`failure_like_state_20261003_162610` and siblings)
+but the same day's fresh-browser screenshot of it was visually ambiguous —
+not clearly the blue filled state, not clearly plain either, so it was
+reported as inconclusive at the time. A second live batch on 2026-10-05
+(`failure_like_state_20261005_071940_likedom.json`) repeated the same
+capture, and this time the fresh-browser screenshot was unambiguous: the
+Like icon and text render in LinkedIn's blue, visually distinct from the
+plain black/gray Comment, Repost and Send controls beside it. Both the
+capture path and the live-browser rendering now agree: **`"Reaction button
+state: Like"` is the liked state**, not an unliked one and not a dead shape.
+
+This sits in tension with the rest of §6.8/§6.9's selector lists, which were
+written before this was confirmed:
+`LIKE_BUTTON_SELECTORS[1]` is the literal string
+`"button[aria-label='Reaction button state: Like']"`, originally kept as the
+pre-drift fallback for the UNLIKED shape (§6.8's "one exact selector" before
+the drift was found) — but that string is now confirmed to be the LIKED
+label instead. `LIKED_STATE_SELECTORS[0]`
+(`"Reaction button state: Liked"`, with a trailing "d") has never been
+observed on this account and remains exactly as unconfirmed as the rest of
+this section always said it was. Nothing here has been changed in code as
+of this note — it is a documentation correction only, filed as a BACKLOG
+item for the dispatch that fixes it, since `find_like_button()` would match
+`LIKE_BUTTON_SELECTORS[1]` on an already-liked post before ever reaching the
+`LIKED_STATE_SELECTORS` branch that is supposed to catch that case.
 
 
 ## 7. Posts that are GONE (deleted, taken down, made private)
