@@ -506,6 +506,46 @@ an already-liked post (harmless, non-critical); a false already-liked costs
 a silently skipped Like with no evidence anyone could have found before this
 section existed.
 
+**MEASURED 2026-10-05 — the two labels, stated plainly.** The paragraphs
+above describe the drift but never say outright which label means which
+state. Two independent live batches against the `dev` profile, each followed
+by a read-only fresh-browser check (new session, no click, aria-label read
+plus a screenshot) confirm both ends:
+
+| State | `aria-label` |
+|---|---|
+| **Unliked** (never reacted) | `Reaction button state: no reaction` |
+| **Liked** | `Reaction button state: Like` |
+
+The unliked label was confirmed 2026-10-03
+(`failure_like_state_20261003_124153` and siblings, plus a fresh-browser
+read matching it). The liked label was confirmed twice: a 2026-10-03 batch
+captured it post-click (`failure_like_state_20261003_162610` and siblings)
+but the same day's fresh-browser screenshot of it was visually ambiguous —
+not clearly the blue filled state, not clearly plain either, so it was
+reported as inconclusive at the time. A second live batch on 2026-10-05
+(`failure_like_state_20261005_071940_likedom.json`) repeated the same
+capture, and this time the fresh-browser screenshot was unambiguous: the
+Like icon and text render in LinkedIn's blue, visually distinct from the
+plain black/gray Comment, Repost and Send controls beside it. Both the
+capture path and the live-browser rendering now agree: **`"Reaction button
+state: Like"` is the liked state**, not an unliked one and not a dead shape.
+
+This sits in tension with the rest of §6.8/§6.9's selector lists, which were
+written before this was confirmed:
+`LIKE_BUTTON_SELECTORS[1]` is the literal string
+`"button[aria-label='Reaction button state: Like']"`, originally kept as the
+pre-drift fallback for the UNLIKED shape (§6.8's "one exact selector" before
+the drift was found) — but that string is now confirmed to be the LIKED
+label instead. `LIKED_STATE_SELECTORS[0]`
+(`"Reaction button state: Liked"`, with a trailing "d") has never been
+observed on this account and remains exactly as unconfirmed as the rest of
+this section always said it was. Nothing here has been changed in code as
+of this note — it is a documentation correction only, filed as a BACKLOG
+item for the dispatch that fixes it, since `find_like_button()` would match
+`LIKE_BUTTON_SELECTORS[1]` on an already-liked post before ever reaching the
+`LIKED_STATE_SELECTORS` branch that is supposed to catch that case.
+
 
 ## 7. Posts that are GONE (deleted, taken down, made private)
 
