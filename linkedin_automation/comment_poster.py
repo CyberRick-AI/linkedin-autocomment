@@ -86,13 +86,22 @@ class LinkedInCommentPoster:
     #
     # MEASURED 2026-10-03 (MAINTENANCE §6.9): the unliked label drifted to
     # "Reaction button state: no reaction" (button text is still "Like").
-    # New hook FIRST, per MAINTENANCE step 4 - nothing below it deleted. The
-    # old "...state: Like" shape and the two previous-generation selectors
-    # after it stay as fallbacks, affordable because the lookup is bounded in
-    # TOTAL (`LIKE_WAIT_SECONDS`, 3s), not per selector.
+    # New hook FIRST, per MAINTENANCE step 4 - the two previous-generation
+    # selectors after it stay as fallbacks, affordable because the lookup is
+    # bounded in TOTAL (`LIKE_WAIT_SECONDS`, 3s), not per selector.
+    #
+    # REMOVED 2026-10-05 (Dispatch 28): this list used to also carry
+    # "button[aria-label='Reaction button state: Like']" as a supposed
+    # pre-drift fallback for the unliked shape. MEASURED 2026-10-05 (two live
+    # batches, a fresh-browser screenshot confirming blue "Liked" rendering):
+    # that string is the LIKED label, not an older unliked one. A fallback
+    # keeps an OLDER selector for the SAME element in an OLDER shape; this one
+    # named the opposite state, so keeping it here made every already-liked
+    # post match as clickable-to-like and get unliked on click, with
+    # LIKED_STATE_SELECTORS below never running. It belongs in the state list
+    # below, not here - see that list's entry for the same date.
     LIKE_BUTTON_SELECTORS = [
         "button[aria-label='Reaction button state: no reaction']",
-        "button[aria-label='Reaction button state: Like']",
         "button[aria-label*='Like'][aria-pressed='false']",
         "button.react-button__trigger:not(.react-button__trigger--active)",
         "button[data-control-name='like_toggle']",
@@ -116,7 +125,16 @@ class LinkedInCommentPoster:
     # whole branch. It is still safe to be wrong in the false-miss direction:
     # liking is non-critical, and worst case is a redundant Like attempt on
     # an already-liked post.
+    #
+    # ADDED 2026-10-05 (Dispatch 28): "Reaction button state: Like" (no "d") is
+    # MEASURED LIVE as the real liked-state label (two live batches, a
+    # fresh-browser screenshot confirming blue "Liked" rendering) - it was
+    # wrongly kept in LIKE_BUTTON_SELECTORS above instead of here. The
+    # "...Liked" (with "d") entry right below it has never been observed on a
+    # live capture and is kept only as an unconfirmed guess at a label LinkedIn
+    # may use elsewhere.
     LIKED_STATE_SELECTORS = [
+        "button[aria-label='Reaction button state: Like']",
         "button[aria-label='Reaction button state: Liked']",
         "button[aria-label='Reaction button state: Celebrate']",
         "button[aria-label='Reaction button state: Support']",

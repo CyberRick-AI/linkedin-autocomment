@@ -531,20 +531,44 @@ plain black/gray Comment, Repost and Send controls beside it. Both the
 capture path and the live-browser rendering now agree: **`"Reaction button
 state: Like"` is the liked state**, not an unliked one and not a dead shape.
 
-This sits in tension with the rest of §6.8/§6.9's selector lists, which were
+This sat in tension with the rest of §6.8/§6.9's selector lists, which were
 written before this was confirmed:
-`LIKE_BUTTON_SELECTORS[1]` is the literal string
+`LIKE_BUTTON_SELECTORS[1]` was the literal string
 `"button[aria-label='Reaction button state: Like']"`, originally kept as the
 pre-drift fallback for the UNLIKED shape (§6.8's "one exact selector" before
 the drift was found) — but that string is now confirmed to be the LIKED
 label instead. `LIKED_STATE_SELECTORS[0]`
 (`"Reaction button state: Liked"`, with a trailing "d") has never been
 observed on this account and remains exactly as unconfirmed as the rest of
-this section always said it was. Nothing here has been changed in code as
-of this note — it is a documentation correction only, filed as a BACKLOG
-item for the dispatch that fixes it, since `find_like_button()` would match
-`LIKE_BUTTON_SELECTORS[1]` on an already-liked post before ever reaching the
-`LIKED_STATE_SELECTORS` branch that is supposed to catch that case.
+this section always said it was. At the time this paragraph was first
+written, nothing had been changed in code yet — it was a documentation
+correction only, filed as a BACKLOG item, since `find_like_button()` would
+match `LIKE_BUTTON_SELECTORS[1]` on an already-liked post before ever
+reaching the `LIKED_STATE_SELECTORS` branch that is supposed to catch that
+case.
+
+**FIXED 2026-10-05 (Dispatch 28) — a fallback names the same element, never
+the opposite state.** `LIKE_BUTTON_SELECTORS[1]` is removed, and
+`"Reaction button state: Like"` is added to `LIKED_STATE_SELECTORS` instead.
+This was mis-filed as a "fallback" in the paragraph above, and that framing
+was itself the error worth naming: **§3 step 4's "new hooks first, old ones
+as fallbacks" rule is only about an older selector for the SAME element** —
+the three generations of unliked-button selector that genuinely are fallbacks
+(`...no reaction`, the `aria-pressed='false'` shape, the `react-button`
+class, `data-control-name='like_toggle'`) all still name "the clickable
+not-yet-liked button," just by older and older hooks. `"...state: Like"`
+never named that element in any era — it names the opposite state, the
+LIKED button — so keeping it in the clickable-target list was never a
+fallback in that sense; it was a mis-classified selector that happened to sit
+in the right-shaped list. **A selector that names a different state than the
+list it sits in belongs in the state list, never the target list, no matter
+how it got there or how old it is.** With the move made,
+`find_like_button()` can no longer return an already-liked post's button as
+a clickable target, and `LIKED_STATE_SELECTORS` now recognizes the real
+liked label instead of only the unconfirmed `"...Liked"` (with "d") guess.
+Regression tests: `tests/test_comment_not_posted.py` (the already-liked,
+unliked and unrecognised-label cases, asserting on the click itself, not
+just the verdict) and `tests/test_like_label_drift.py` section 4.
 
 
 ## 7. Posts that are GONE (deleted, taken down, made private)

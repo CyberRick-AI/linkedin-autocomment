@@ -206,22 +206,39 @@ def test_an_unrecognised_label_never_blocks_the_comment(failures):
     assert page.published == [(URL, comment["comment"])]
 
 
-# ─── 4. the old "state: Like" shape still resolves, via the fallback ───────
+# ─── 4. Dispatch 28, MEASURED 2026-10-05: "state: Like" is the LIKED label,
+#        not an unliked fallback - it must resolve ALREADY_LIKED and never
+#        be clicked ──────────────────────────────────────────────────────
+#
+# This section used to assert the opposite: that "...state: Like" was kept
+# in LIKE_BUTTON_SELECTORS as a pre-drift fallback for the UNLIKED shape, and
+# clicking it was the correct "placed" outcome. Two live batches and a
+# fresh-browser screenshot (blue "Liked" rendering) on 2026-10-05 proved that
+# belief wrong: the string names the LIKED state. Keeping it in the
+# clickable-target list meant find_like_button() handed back an
+# already-liked post's button as if unliked, and like_post() clicked it -
+# unliking the post - before LIKED_STATE_SELECTORS ever got a chance to run.
+# MAINTENANCE §6.9's correction: a fallback is only a fallback when it names
+# the SAME element in an OLDER shape; a selector naming the OPPOSITE state
+# belongs in the state list, never the target list.
 
-def test_the_old_state_like_shape_still_resolves_via_the_fallback(failures):
-    assert P.LIKE_BUTTON_SELECTORS[0] != \
-        "button[aria-label='Reaction button state: Like']", (
-            "this test needs the OLD shape to be a fallback, not the "
-            "primary selector")
+def test_the_state_like_shape_is_not_in_the_clickable_target_list(failures):
+    assert "button[aria-label='Reaction button state: Like']" not in \
+        P.LIKE_BUTTON_SELECTORS, (
+            "this string names the LIKED state, not an unliked fallback - "
+            "it must never be a clickable target again")
+
+
+def test_the_state_like_shape_resolves_already_liked_and_is_never_clicked(failures):
     page = _page_with_reaction_label("Reaction button state: Like")
     poster = _poster(page)
 
     assert poster.like_post() is True
-    assert page.liked == [URL]
+    assert page.liked == [], "the liked button must never be clicked"
 
     [dom] = [f for f in _state_files(failures) if f.endswith("_likedom.json")]
     with open(failures / dom, encoding="utf-8") as f:
         captured = json.load(f)
-    assert captured["outcome"] == "placed"
+    assert captured["outcome"] == "already_liked"
     assert captured["decided_by"] == \
         "button[aria-label='Reaction button state: Like']"
