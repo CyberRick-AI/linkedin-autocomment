@@ -1093,9 +1093,15 @@ def test_a_skipped_thread_is_recorded_as_posted_not_failed(poster):
 # The fixture mirrors the action bar in the 2026-09-20 captures, including the
 # reaction-menu decoys, hand-authored per fixtures/README rule 1.
 
+# ACTION_BAR_HTML represents a NOT-YET-LIKED post. MEASURED 2026-10-05
+# (Dispatch 28, MAINTENANCE §6.9): the unliked label is
+# "Reaction button state: no reaction" (button text stays "Like") - this
+# fixture used to carry "...state: Like" here, which is actually the LIKED
+# label (see ALREADY_LIKED_HTML below) and made find_like_button() return the
+# liked button as a clickable target, unliking the post on click.
 ACTION_BAR_HTML = """
 <div role="listitem">
-  <button type="button" aria-label="Reaction button state: Like">Like</button>
+  <button type="button" aria-label="Reaction button state: no reaction">Like</button>
   <button type="button" aria-label="Open reactions menu" aria-expanded="false"></button>
   <button type="button" aria-label="Open reactions menu" aria-expanded="false"></button>
   <button type="button">Comment</button>
@@ -1104,9 +1110,30 @@ ACTION_BAR_HTML = """
 </div>
 """
 
+# ALREADY_LIKED_HTML. MEASURED 2026-10-05: the real liked label is
+# "Reaction button state: Like" (no "d") - confirmed by two live batches and
+# a fresh-browser screenshot showing the blue "Liked" rendering. The
+# "...Liked" (with "d") shape below has never been observed live; it is kept
+# as a second, unconfirmed already-liked fixture.
 ALREADY_LIKED_HTML = """
 <div role="listitem">
+  <button type="button" aria-label="Reaction button state: Like">Like</button>
+  <button type="button" aria-label="Open reactions menu" aria-expanded="false"></button>
+</div>
+"""
+
+ALREADY_LIKED_UNCONFIRMED_GUESS_HTML = """
+<div role="listitem">
   <button type="button" aria-label="Reaction button state: Liked">Liked</button>
+  <button type="button" aria-label="Open reactions menu" aria-expanded="false"></button>
+</div>
+"""
+
+# A reaction label never seen live and not in either known list - must be a
+# miss (UNKNOWN), never clicked, never classified as already-liked.
+UNRECOGNISED_REACTION_HTML = """
+<div role="listitem">
+  <button type="button" aria-label="Reaction button state: Haha">Like</button>
   <button type="button" aria-label="Open reactions menu" aria-expanded="false"></button>
 </div>
 """
@@ -1162,7 +1189,8 @@ def test_the_new_selector_finds_the_like_button(poster):
     poster.driver = ActionBarDriver(ACTION_BAR_HTML)
     button = poster.find_like_button()
     assert button is not None
-    assert button.get_attribute("aria-label") == "Reaction button state: Like"
+    assert button.get_attribute("aria-label") == \
+        "Reaction button state: no reaction"
 
 
 def test_the_reaction_menu_decoys_are_never_returned(poster):
@@ -1217,28 +1245,87 @@ def test_a_missing_like_degrades_to_skip_and_continue(poster):
     assert poster.like_post() is False          # reported, not raised
 
 
-def test_an_already_liked_post_is_recognised(poster):
-    """A different reaction state in the same aria-label family."""
+def test_an_already_liked_post_is_recognised(poster, monkeypatch):
+    """The MEASURED liked label - find_like_button must not treat it as
+    clickable, and no click may be issued (Dispatch 28 gate: assert on the
+    click, not just the verdict)."""
+    clicked = []
+    monkeypatch.setattr(cpm.hb, "human_click", lambda d, el: clicked.append(el))
     poster.driver = ActionBarDriver(ALREADY_LIKED_HTML)
     poster.LIKE_WAIT_SECONDS = 0.2
     poster.LIKE_POLL_SECONDS = 0.05
+    assert poster.find_like_button() is None, \
+        "the liked button must never be returned as a clickable target"
     assert poster.like_post() is True           # already liked, nothing to do
+    assert clicked == [], "an already-liked post must never be clicked"
 
 
-def test_the_old_dead_selectors_are_kept_as_fallbacks(poster):
-    """MAINTENANCE step 4: new hooks first, old ones after.
+def test_an_already_liked_post_with_the_unconfirmed_guess_label_is_also_recognised(poster):
+    """The never-observed-live "...Liked" (with "d") guess stays recognised
+    too - it is kept as a second, unconfirmed entry, not removed."""
+    poster.driver = ActionBarDriver(ALREADY_LIKED_UNCONFIRMED_GUESS_HTML)
+    poster.LIKE_WAIT_SECONDS = 0.2
+    poster.LIKE_POLL_SECONDS = 0.05
+    assert poster.find_like_button() is None
+    assert poster.like_post() is True
 
-    Dispatch 25 moved the unliked label from "...state: Like" to the
-    measured "...state: no reaction" shape, at the FRONT - the old label
-    stays right behind it, not deleted, per step 4.
 
-    Affordable only because the wait is now bounded in total.
+def test_an_unrecognised_reaction_label_is_a_miss_not_already_liked(poster, monkeypatch):
+    """UNKNOWN: neither the unliked shape nor a known reacted label. Must be
+    a miss - logged, counted, captured - never already-liked, and never
+    clicked. The comment path still continues (like_post returns False, not
+    raised)."""
+    clicked = []
+    monkeypatch.setattr(cpm.hb, "human_click", lambda d, el: clicked.append(el))
+    poster.driver = ActionBarDriver(UNRECOGNISED_REACTION_HTML)
+    poster.LIKE_WAIT_SECONDS = 0.2
+    poster.LIKE_POLL_SECONDS = 0.05
+    assert poster.find_like_button() is None
+    assert poster.like_post() is False, "an unknown label is a miss, not a like"
+    assert clicked == [], "an unrecognised label must never be clicked"
+    assert poster.like_misses == 1
+
+
+def test_the_unliked_post_is_still_liked_end_to_end(poster, monkeypatch):
+    """The gate's second case: an unliked ('no reaction') page is attempted
+    and placed - the removal of the inverted fallback must not regress the
+    plain working path."""
+    clicked = []
+    monkeypatch.setattr(cpm.hb, "human_click", lambda d, el: clicked.append(el))
+    poster.driver = ActionBarDriver(ACTION_BAR_HTML)
+    poster.LIKE_WAIT_SECONDS = 0.2
+    poster.LIKE_POLL_SECONDS = 0.05
+    button = poster.find_like_button()
+    assert button is not None
+    assert button.get_attribute("aria-label") == \
+        "Reaction button state: no reaction"
+    assert poster.like_post() is True
+    assert len(clicked) == 1, "the unliked button must be clicked exactly once"
+
+
+def test_the_inverted_fallback_is_gone_and_the_old_fallbacks_remain(poster):
+    """Dispatch 28: "Reaction button state: Like" named the LIKED state, not
+    an older unliked shape, so it does not belong in the clickable-target
+    list at all - keeping it there is what let an already-liked post get
+    clicked (and unliked). It must not reappear here. The two older,
+    currently-dead unliked-shape fallbacks stay, per MAINTENANCE step 4,
+    since a fallback is only a fallback when it names the SAME element in an
+    OLDER shape.
     """
     assert poster.LIKE_BUTTON_SELECTORS[0] == \
         "button[aria-label='Reaction button state: no reaction']"
-    assert poster.LIKE_BUTTON_SELECTORS[1] == \
-        "button[aria-label='Reaction button state: Like']"
+    assert "button[aria-label='Reaction button state: Like']" not in \
+        poster.LIKE_BUTTON_SELECTORS
     assert any("aria-pressed='false'" in s for s in poster.LIKE_BUTTON_SELECTORS)
+
+
+def test_the_measured_liked_label_is_in_the_state_list_not_the_target_list(poster):
+    """The correction's other half: the real liked label belongs in
+    LIKED_STATE_SELECTORS, not LIKE_BUTTON_SELECTORS."""
+    assert "button[aria-label='Reaction button state: Like']" in \
+        poster.LIKED_STATE_SELECTORS
+    assert "button[aria-label='Reaction button state: Like']" not in \
+        poster.LIKE_BUTTON_SELECTORS
 
 
 # ─── the comment box is watched for, not slept through ───────────────────────
