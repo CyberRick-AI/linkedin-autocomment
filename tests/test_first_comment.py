@@ -27,11 +27,16 @@ LINK = "https://example.com/the-reach-link"
 class FakePoster:
     """Stands in for LinkedInCommentPoster's primitives."""
 
-    def __init__(self, navigate_ok=True, comment_ok=True, login_ok=True):
+    def __init__(self, navigate_ok=True, comment_ok=True, login_ok=True,
+                already_commented=False,
+                already_commented_why="no comment of ours found on this thread"):
         self.navigate_ok, self.comment_ok, self.login_ok = (
             navigate_ok, comment_ok, login_ok)
+        self.already_commented = already_commented
+        self.already_commented_why = already_commented_why
         self.navigated = []
         self.comments = []
+        self.already_commented_calls = []
         self.liked = 0
         self.driver = None
 
@@ -44,6 +49,12 @@ class FakePoster:
     def navigate_to_post(self, url):
         self.navigated.append(url)
         return self.navigate_ok
+
+    def already_commented_here(self, comment_text=None):
+        self.already_commented_calls.append(comment_text)
+        if self.already_commented:
+            return True, self.already_commented_why
+        return False, self.already_commented_why
 
     def post_comment(self, text):
         self.comments.append(text)
@@ -208,6 +219,75 @@ def test_a_missing_permalink_fails_without_touching_the_browser(ledger):
     out = fc.post_first_comment("", LINK, poster=p, ledger=ledger)
     assert out["status"] == fc.FAILED
     assert p.navigated == []
+
+
+# --- the duplicate guard (Dispatch 31, MAINTENANCE §6.6 reused) -------------
+#
+# post_first_comment used to go straight from navigate_to_post to
+# post_comment, relying only on the FirstCommentLedger. A retry of a row that
+# went COMMENT_FAILED on a false-negative verify (the comment actually landed,
+# but post_comment() reported False) had nothing stopping a second comment on
+# our own post. already_commented_here() - the same §6.6 check the main
+# engagement path runs - is now asked first, reusing it rather than writing a
+# second one.
+
+def test_already_on_thread_skips_post_comment_and_reaches_already(ledger):
+    """Assert on the post_comment call, not the status - the gate's own
+    wording, because a status-only assertion would pass even if post_comment
+    were still called and the duplicate landed anyway."""
+    p = FakePoster(already_commented=True, already_commented_why="a comment "
+                   "of ours is already on this thread ('• You')")
+    out = fc.post_first_comment(PERMALINK, LINK, poster=p, ledger=ledger)
+    assert out["status"] == fc.ALREADY
+    assert p.comments == [], "post_comment must not be called when already on thread"
+    assert ledger.already_posted(PERMALINK), "the ledger must still gain its entry"
+
+
+def test_the_duplicate_check_reuses_already_commented_here_with_the_link(ledger):
+    """Reuse, not a second check: the same method, called with the comment
+    link as the text to look for."""
+    p = FakePoster()
+    fc.post_first_comment(PERMALINK, LINK, poster=p, ledger=ledger)
+    assert p.already_commented_calls == [LINK]
+
+
+def test_a_clean_thread_is_commented_as_before(ledger):
+    p = FakePoster(already_commented=False)
+    out = fc.post_first_comment(PERMALINK, LINK, poster=p, ledger=ledger)
+    assert out["status"] == fc.POSTED
+    assert p.comments == [LINK]
+
+
+def test_an_unreadable_thread_does_not_block_posting(ledger):
+    """§6.6's own conservative direction: unreadable must read as False, not
+    True - a DOM change must not silently stop the tool."""
+    p = FakePoster(already_commented=False,
+                   already_commented_why="thread not readable")
+    out = fc.post_first_comment(PERMALINK, LINK, poster=p, ledger=ledger)
+    assert out["status"] == fc.POSTED, "an unreadable thread must not block posting"
+    assert p.comments == [LINK]
+
+
+def test_a_retry_after_a_false_negative_verify_does_not_double_comment(ledger):
+    """The exact failure mode this dispatch exists for: a comment lands, but
+    post_comment() reports False (a false-negative verify, MAINTENANCE §6.5),
+    so the row goes COMMENT_FAILED with no ledger entry. A retry must not
+    comment a second time - the live thread is what catches it, since the
+    ledger alone has nothing recorded."""
+    false_negative = FakePoster(comment_ok=False)
+    first = fc.post_first_comment(PERMALINK, LINK, poster=false_negative,
+                                  ledger=ledger)
+    assert first["status"] == fc.FAILED
+    assert not ledger.already_posted(PERMALINK), \
+        "a false-negative verify leaves no ledger entry, by design"
+
+    # The retry's browser reads the thread fresh and finds the comment that
+    # actually landed on the first attempt.
+    retry = FakePoster(already_commented=True)
+    second = fc.post_first_comment(PERMALINK, LINK, poster=retry, ledger=ledger)
+    assert second["status"] == fc.ALREADY
+    assert retry.comments == [], "a second comment would be the duplicate this guards against"
+    assert ledger.already_posted(PERMALINK)
 
 
 def test_the_result_never_suggests_republishing():

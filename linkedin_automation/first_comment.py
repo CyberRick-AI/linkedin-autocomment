@@ -14,8 +14,15 @@ around that one fact:
   caller cannot mistake "the comment did not land" for "the row failed" and undo
   work that actually succeeded. The post standing without its comment is a
   manual fixup, not a pipeline failure.
-* A permalink gets exactly one first comment, tracked in its own ledger, so a
-  re-run after a partial failure cannot double-comment.
+* A permalink gets exactly one first comment. The ledger is the first line of
+  defense, but a comment can land on LinkedIn while ``post_comment()``'s own
+  verifier reports False (a false-negative, MAINTENANCE §6.5) — leaving no
+  ledger entry at all. So before ever calling ``post_comment()``, this also
+  asks the thread itself via the main engagement path's own
+  ``already_commented_here()`` (MAINTENANCE §6.6, reused rather than
+  reimplemented): a positive finding records the ledger entry and skips the
+  post, exactly the "ask the thread, not our records" guard the main path
+  already relies on.
 
 It composes ``LinkedInCommentPoster``'s primitives rather than calling
 ``post_single_comment``, for two reasons: that method always likes the post, and
@@ -152,6 +159,18 @@ def post_first_comment(permalink, comment_link, poster=None, ledger=None,
         if not poster.navigate_to_post(permalink):
             return _result(FAILED, permalink, comment_link,
                            "could not open the published post at %s" % permalink)
+
+        # BEFORE typing: is this comment already on the thread? The same
+        # §6.6 guard the main engagement path uses (ask the thread, not our
+        # own records) - a retry after a false-negative verify must not
+        # double-comment on our own post. Conservative in the safe
+        # direction: an unreadable thread returns False and posting
+        # proceeds (comment_poster.already_commented_here's own contract).
+        already, why = poster.already_commented_here(comment_link)
+        if already:
+            logger.info("First comment already on %s - %s", permalink, why)
+            ledger.record(permalink, comment_link)
+            return _result(ALREADY, permalink, comment_link)
 
         # NOTE: like_post() is deliberately not called. This is our own post;
         # self-liking is not the behaviour we want.
