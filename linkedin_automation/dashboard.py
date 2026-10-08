@@ -40,6 +40,14 @@ app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
 
+#: The port the dashboard serves on. Named once so the Restart button's helper
+#: waits on, and restarts onto, the same port ``app.run`` binds below.
+DASHBOARD_PORT = 6500
+
+# How long to let the restart response reach the browser before exiting. Named
+# so the tests can shorten it without patching time.sleep, which is shared.
+RESTART_GRACE_SECONDS = 0.7
+
 # ─── Subprocess Environment (fix Windows cp1252 encoding) ─────────────────────
 
 _subprocess_env = os.environ.copy()
@@ -2549,6 +2557,89 @@ def scheduler_run_now(profile_name):
     return jsonify({"ok": True, "result": result})
 
 
+# ─── API: Restart ─────────────────────────────────────────────────────────────
+
+def _restart_wait_pids():
+    """The pids the restart helper must see exit before starting a new server.
+
+    This process, always. And, when this process is the Werkzeug reloader's
+    child (``app.run(debug=True)`` below turns the reloader on), its parent as
+    well: the reloader *monitor* binds the listening socket and hands it to the
+    child, so it keeps the port open after the child exits, until it notices the
+    exit and exits itself. Waiting on the child alone would race that.
+    """
+    pids = [os.getpid()]
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        pids.append(os.getppid())
+    return pids
+
+
+@app.route('/api/restart', methods=['POST'])
+def restart_dashboard():
+    """POST /api/restart — restart the server so it picks up new code.
+
+    A running dashboard does not pick up an update to code it has already
+    imported, and there is no symptom when a restart is missed: the app keeps
+    working exactly as before, which reads as the update not working. On the
+    macOS app or a double-clicked launcher there is no terminal in front of the
+    operator to restart it from, so it is a button.
+
+    A server cannot restart itself, so a detached helper
+    (``linkedin_automation/restart_helper.py``) does the second half: it waits
+    for this process — and the reloader monitor above it, see
+    ``_restart_wait_pids`` — to exit, waits for the port to free, and starts a
+    replacement. This process then exits with code 0, which the reloader
+    monitor passes straight through (only exit code 3 makes it respawn), so
+    both go.
+
+    **Refused while a browser job is running.** Killing this process mid-scrape
+    orphans a Chrome holding the profile, which then blocks every later run and
+    every login with a message that names none of that. Waiting is cheap; that
+    is not. API jobs (generation) are subprocesses that finish on their own,
+    so they do not block it.
+    """
+    busy = get_active_jobs(task_type="browser")
+    if busy:
+        names = ", ".join(sorted({j.get("category") or "browser job"
+                                  for j in busy.values()}))
+        return jsonify({
+            "error": f"A browser task is still running ({names}). Wait for it "
+                     f"to finish, or stop it, then restart.",
+        }), 409
+
+    from . import restart_helper
+
+    pids = _restart_wait_pids()
+    helper = [sys.executable, "-m", "linkedin_automation.restart_helper",
+              str(pids[0]), str(DASHBOARD_PORT)] + [str(p) for p in pids[1:]]
+    try:
+        subprocess.Popen(
+            helper, cwd=os.path.dirname(_PACKAGE_DIR),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            # Explicit, because it is load-bearing: the reloader marks the
+            # listening socket inheritable, and a helper that inherited it
+            # would hold the port open and wait on itself until it timed out.
+            close_fds=True,
+            **restart_helper.detached_popen_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.error("Could not start the restart helper: %s", e)
+        return jsonify({"error": f"Could not start the restart helper: {e}"}), 500
+
+    def _shutdown():
+        # Give the response time to reach the browser. os._exit rather than a
+        # graceful shutdown because Werkzeug removed the in-request shutdown
+        # hook, and there is nothing here worth unwinding: jobs run as
+        # subprocesses and the check above proved none is a browser job.
+        time.sleep(RESTART_GRACE_SECONDS)
+        logger.info("Restarting on request")
+        os._exit(0)
+
+    threading.Thread(target=_shutdown, daemon=True).start()
+    return jsonify({"restarting": True, "port": DASHBOARD_PORT, "waiting_on": pids})
+
+
 # ─── Serve Frontend ──────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -2563,11 +2654,11 @@ if __name__ == '__main__':
     pm.auto_migrate_from_env()
     print("\n" + "=" * 50)
     print("  LinkedIn Automation Dashboard")
-    print("  http://localhost:6500")
+    print(f"  http://localhost:{DASHBOARD_PORT}")
     print("=" * 50 + "\n")
     # Start the background scheduler. use_reloader is left on (Flask debug), so
     # only start in the reloader's child process to avoid two scheduler threads.
     if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         scheduler_engine.start()
         drain_engine.start()
-    app.run(debug=True, port=6500)
+    app.run(debug=True, port=DASHBOARD_PORT)

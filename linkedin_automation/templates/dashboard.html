@@ -1063,6 +1063,12 @@ header {
            lives in this page. -->
       <button class="btn btn-sm" id="loginBtn" onclick="startLogin()"
               title="Open Chrome and sign in to LinkedIn">Log in</button>
+      <!-- An update to the code needs a restart to take effect, and a missed
+           one has no symptom: the app keeps working as before. On the macOS
+           app there is no terminal to restart from, so it is a button on the
+           screen the operator is already looking at. -->
+      <button class="btn btn-sm" id="restartBtn" onclick="restartDashboard()"
+              title="Restart the dashboard to pick up an update">Restart</button>
       <span id="loginBadge" class="cfg-badge" style="display:none"></span>
     </div>
   </header>
@@ -3119,6 +3125,60 @@ async function checkCredential() {
   } catch (e) {
     out.innerHTML = `<span style="color:var(--red)">Check failed: ${esc(e.message)}</span>`;
   }
+}
+
+// ─── Restart the dashboard ──────────────────────────────
+
+async function restartDashboard() {
+  // Restarting is the fix for "I pulled an update and nothing changed", which
+  // has no symptom of its own: the app keeps working exactly as before.
+  // Browser jobs refuse the restart server-side (409); this only has to warn
+  // about everything else.
+  const ok = await askConfirm(
+    'Restart the dashboard? Anything running will be interrupted, and the ' +
+    'page will reload when it comes back.', 'Restart');
+  if (!ok) return;
+
+  const btn = document.getElementById('restartBtn');
+  btn.disabled = true;
+  btn.innerHTML = 'Restarting...';
+
+  let res;
+  try {
+    res = await fetch('/api/restart', {method: 'POST'});
+  } catch (e) {
+    // The server may exit before the response lands. That is a successful
+    // restart, not a failure, so fall through to polling rather than
+    // reporting an error the operator would act on wrongly.
+    res = null;
+  }
+
+  if (res && !res.ok) {
+    const body = await res.json().catch(() => ({}));
+    showToast(body.error || 'Restart refused', 'error');
+    btn.disabled = false;
+    btn.innerHTML = 'Restart';
+    return;
+  }
+
+  showToast('Restarting. The page will reload by itself.', 'info');
+  waitForDashboard(btn);
+}
+
+function waitForDashboard(btn, attempt) {
+  // Poll until it answers again. Deliberately patient: a cold start imports
+  // Flask, selenium and the provider SDKs, which is slow on a first run.
+  attempt = attempt || 0;
+  if (attempt > 120) {
+    showToast('The dashboard did not come back. Open the app again.', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Restart'; }
+    return;
+  }
+  setTimeout(function () {
+    fetch('/api/profiles', {cache: 'no-store'})
+      .then(function (r) { if (r.ok) { location.reload(); } else { throw 0; } })
+      .catch(function () { waitForDashboard(btn, attempt + 1); });
+  }, 1000);
 }
 
 // ─── Toasts and in-page confirmation ────────────────────
