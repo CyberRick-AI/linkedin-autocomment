@@ -25,7 +25,9 @@ a randomized, human-paced schedule.
 ## Quick Start
 
 On Windows you can just run `setup.bat` (installs deps, creates `.env`, makes
-`data/`) then `run.bat`. Or do it manually:
+`data/`) then `run.bat`. On a Mac, double-click `install.command`, which also
+builds a menu bar app — see [docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md).
+Or do it manually:
 
 ```bash
 # 1. Install uv (if you don't have it)

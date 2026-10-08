@@ -90,3 +90,6 @@ Thumbs.db
 
 # Scratch register-review artifact (like the DOM dumps): regenerated on demand.
 register_review.txt
+
+# Built by tools/build_app.py; records this machine's project path
+dist/

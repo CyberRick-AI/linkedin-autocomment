@@ -56,14 +56,14 @@ if [ "$APP_BUILT" = "1" ]; then
     echo "   choose Open, then confirm. After that a normal double-click works."
 fi
 echo
-echo "2. In the dashboard, open Settings and paste an API key for whichever"
-echo "   provider you want to use. You pay for your own usage."
+echo "2. Edit .env in this folder and set OPENAI_API_KEY. You pay for your"
+echo "   own usage."
 echo
-echo "3. Press 'Log in' in the header and sign in to LinkedIn in the Chrome"
-echo "   window that opens. Your password goes to LinkedIn's own page and"
-echo "   never passes through this app."
+echo "3. Add a profile and sign in to LinkedIn once, from Terminal in this"
+echo "   folder:"
+echo "     uv run python -m linkedin_automation.profile_manager add <name>"
+echo "     uv run python tools/login_check.py --profile <name>"
 echo
-echo "See docs/INSTALL-MACOS.md for detail, and docs/OPERATING.md for how to"
-echo "start, stop and restart it afterwards."
+echo "See docs/INSTALL-MACOS.md for detail."
 echo
 read -r -p "Press Return to close this window..."
