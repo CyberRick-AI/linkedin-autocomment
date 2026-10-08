@@ -1058,6 +1058,12 @@ header {
       <button class="btn-icon" onclick="openAddProfile()" title="Add profile">+</button>
       <button class="btn-icon" onclick="openConfigModal()" title="Edit profile config">⚙</button>
       <button class="btn-icon" onclick="setDefaultProfile()" title="Set as default profile">★</button>
+      <!-- Logging in was the one step in the whole flow with no button, which
+           is why it still needed a terminal. Everything else the operator does
+           lives in this page. -->
+      <button class="btn btn-sm" id="loginBtn" onclick="startLogin()"
+              title="Open Chrome and sign in to LinkedIn">Log in</button>
+      <span id="loginBadge" class="cfg-badge" style="display:none"></span>
     </div>
   </header>
 
@@ -1722,8 +1728,21 @@ header {
     <div class="panel-header">
       <div>
         <div class="panel-title">Settings</div>
-        <div class="panel-subtitle">Choose which AI provider generates your comments and posts, and store its API key in your operating system's credential store.</div>
+        <div class="panel-subtitle">Check the stored LinkedIn credential, choose which AI provider generates your comments and posts, and store its API key in your operating system's credential store.</div>
       </div>
+    </div>
+
+    <!-- Stored LinkedIn credential for the selected profile -->
+    <div class="poster-section" style="margin-bottom:1rem">
+      <h3>Stored LinkedIn Credential</h3>
+      <div class="trash-reason" style="margin-bottom:1rem">
+        Checks that the password for the selected profile is stored where it
+        should be and can be read back. It does not contact LinkedIn and does
+        not sign in, so it cannot tell you the credential is correct — only
+        logging in can. The password is never shown here.
+      </div>
+      <button class="btn btn-sm" onclick="checkCredential()">Check Stored Credential</button>
+      <div id="credentialResult" style="margin-top:0.75rem"></div>
     </div>
 
     <!-- Provider for the selected profile -->
@@ -2990,6 +3009,116 @@ async function renderActiveModel(elementId) {
 
 function refreshActiveModels() {
   ['commentModelInfo', 'posterModelInfo', 'articleModelInfo'].forEach(renderActiveModel);
+}
+
+// ─── Sign in to LinkedIn ────────────────────────────────
+//
+// The one step that had no button, and so the one step that still needed a
+// terminal. The window this opens is LinkedIn's own login page: the password
+// is typed there, by the operator, never by this project.
+
+async function startLogin() {
+  if (!currentProfile) return showToast('Select a profile first', 'error');
+  const btn = document.getElementById('loginBtn');
+  const badge = document.getElementById('loginBadge');
+
+  const ok = await askConfirm(
+    `Open Chrome and sign in to LinkedIn as "${currentProfile}"?\n\n` +
+    `A browser window opens on LinkedIn. Sign in there — nothing to press ` +
+    `afterwards, it detects it and closes on its own. Your password goes to ` +
+    `LinkedIn's own page, never through this app.`, 'Open Chrome');
+  if (!ok) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Waiting for sign-in…';
+  badge.style.display = 'none';
+  const finish = () => { btn.disabled = false; btn.innerHTML = 'Log in'; };
+
+  try {
+    const res = await fetch(`/api/profiles/${currentProfile}/login`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({wait: true}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.error || 'Could not start the login', 'error');
+      return finish();
+    }
+    const { job_id } = await res.json();
+    refreshActiveJobs();
+    showToast('Chrome is opening. Sign in there — this page will update itself.');
+
+    const iv = setInterval(async () => {
+      try {
+        const job = await (await fetch(`/api/jobs/${job_id}`)).json();
+        if (job.status === 'completed') {
+          clearInterval(iv);
+          renderLoginResult(job.result || {});
+          refreshActiveJobs();
+          finish();
+        } else if (job.status === 'failed') {
+          clearInterval(iv);
+          showToast('Login check failed: ' + (job.error || 'Unknown error'), 'error');
+          refreshActiveJobs();
+          finish();
+        }
+      } catch (e) {
+        clearInterval(iv);
+        showToast('Polling error: ' + e.message, 'error');
+        finish();
+      }
+    }, 3000);
+  } catch (e) {
+    showToast('Request failed: ' + e.message, 'error');
+    finish();
+  }
+}
+
+function renderLoginResult(result) {
+  const badge = document.getElementById('loginBadge');
+  const ok = !!result.logged_in;
+  // REFUSED is the production identity guard (no identity_slug declared),
+  // which needs a config change, not another attempt.
+  badge.textContent = ok ? 'signed in' : (result.status || 'not signed in');
+  badge.style.background = ok ? 'var(--green)' : 'var(--yellow)';
+  badge.style.color = '#000';
+  badge.style.display = 'inline-block';
+  showToast(result.message || (ok ? 'Signed in.' : 'Not signed in.'),
+            ok ? 'success' : 'error');
+}
+
+// ─── Stored credential self-check ───────────────────────
+
+async function checkCredential() {
+  if (!currentProfile) return showToast('Select a profile first', 'error');
+  const out = document.getElementById('credentialResult');
+  out.innerHTML = '<span class="trash-reason">Checking…</span>';
+  try {
+    const res = await fetch(`/api/profiles/${currentProfile}/credential-check`);
+    const d = await res.json();
+    if (!res.ok) { out.innerHTML = `<span style="color:var(--red)">${esc(d.error)}</span>`; return; }
+
+    const dot = (ok) => `<span style="color:${ok ? 'var(--green)' : 'var(--red)'}">&#9679;</span>`;
+    const rows = [
+      `<div style="font-family:var(--mono);font-size:0.78rem;line-height:1.7">`,
+      `${dot(true)} username &nbsp; ${esc(d.username || '(none recorded)')}`,
+      `<br>${dot(d.in_keychain)} stored in &nbsp; ${esc(d.stored_in)}` +
+        (d.in_keychain ? '' : ' — not the OS credential store'),
+      `<br>${dot(!d.plaintext_in_file)} plaintext in profiles.json &nbsp; ${d.plaintext_in_file ? 'YES' : 'no'}`,
+      `<br>${dot(d.roundtrip_ok)} can be read back &nbsp; ${d.roundtrip_ok ? 'yes' : 'NO'}`,
+      d.detail ? `<br><span style="color:var(--yellow)">${esc(d.detail)}</span>` : '',
+      `</div>`,
+    ];
+    // State the limit as prominently as the result. A check that lists what it
+    // verified and stays quiet about what it did not is how a partial answer
+    // gets read as a whole one.
+    rows.push(`<div class="trash-reason" style="margin-top:0.6rem">Not checked: ` +
+              `${esc((d.not_checked || []).join(' '))}</div>`);
+    out.innerHTML = rows.join('');
+  } catch (e) {
+    out.innerHTML = `<span style="color:var(--red)">Check failed: ${esc(e.message)}</span>`;
+  }
 }
 
 // ─── Toasts and in-page confirmation ────────────────────

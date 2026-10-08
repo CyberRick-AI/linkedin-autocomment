@@ -159,12 +159,45 @@ def test_check_login_unknown_profile(monkeypatch):
 def test_main_no_wait_passes_through(monkeypatch):
     captured = {}
 
-    def fake_check(profile_name=None, wait_for_manual=True, allow_production=False):
+    def fake_check(profile_name=None, wait_for_manual=True, allow_production=False,
+                   timeout=None):
         captured["profile"] = profile_name
         captured["wait"] = wait_for_manual
+        captured["timeout"] = timeout
         return pm.EXIT_OK
 
     monkeypatch.setattr(login_check, "check_login", fake_check)
     code = login_check.main(["--profile", "demo", "--no-wait"])
     assert code == pm.EXIT_OK
-    assert captured == {"profile": "demo", "wait": False}
+    assert captured == {"profile": "demo", "wait": False,
+                        "timeout": login_check.LOGIN_WAIT_TIMEOUT_SECONDS}
+
+
+def test_main_passes_a_custom_timeout_through(monkeypatch):
+    """The wait is bounded, and the bound is configurable, so the poll cannot
+    become a different kind of silent hang."""
+    captured = {}
+
+    def fake_check(profile_name=None, wait_for_manual=True, allow_production=False,
+                   timeout=None):
+        captured["timeout"] = timeout
+        return pm.EXIT_OK
+
+    monkeypatch.setattr(login_check, "check_login", fake_check)
+    login_check.main(["--profile", "demo", "--timeout", "42"])
+    assert captured["timeout"] == 42
+
+
+def test_main_still_passes_allow_production_through(monkeypatch):
+    """The dashboard's Log in button relies on this flag (it is an authorized
+    caller, docs/ARCHITECTURE.md §9). The timeout port must not drop it."""
+    captured = {}
+
+    def fake_check(profile_name=None, wait_for_manual=True, allow_production=False,
+                   timeout=None):
+        captured["allow"] = allow_production
+        return pm.EXIT_OK
+
+    monkeypatch.setattr(login_check, "check_login", fake_check)
+    login_check.main(["--profile", "demo", "--allow-production"])
+    assert captured["allow"] is True

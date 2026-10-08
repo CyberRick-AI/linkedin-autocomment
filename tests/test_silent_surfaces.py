@@ -1,7 +1,8 @@
 """The Settings surfaces must not fail silently.
 
 Ported from the beta branch's Phase 5b suite, keeping the parts that apply to
-what was ported here (the Settings tab). They share one shape: a control
+what was ported here: the Settings tab, the stored-credential check, and the
+login wait that the dashboard's Log in button depends on. They share one shape: a control
 declines to act and says nothing, so the operator cannot tell a refusal from a
 hang from a success.
 
@@ -22,6 +23,7 @@ import pytest
 
 from linkedin_automation import profile_manager as pm
 from linkedin_automation import providers
+from tools import login_check
 
 
 TEMPLATE = (Path(__file__).parent.parent / "linkedin_automation"
@@ -158,3 +160,150 @@ def test_an_unverified_default_still_says_so():
     unverified = [s.name for s in providers.SPECS.values()
                   if s.default_model and not s.default_model_verified]
     assert unverified, "no spec is unverified any more; the warning is now dead UI"
+
+
+# ─── login_check no longer needs a terminal ───────────────────────────────────
+
+class FakeDriver:
+    """Reports logged-out for the first ``flips_after`` checks, then logged in."""
+
+    def __init__(self, flips_after=None):
+        self.flips_after = flips_after
+        self.checks = 0
+
+
+def _patch_login(monkeypatch, driver_state):
+    def fake_is_logged_in(driver):
+        driver.checks += 1
+        if driver.flips_after is None:
+            return False
+        return driver.checks > driver.flips_after
+    monkeypatch.setattr(pm, "is_logged_in_on_page", fake_is_logged_in)
+    return driver_state
+
+
+def test_the_wait_polls_and_needs_no_stdin(monkeypatch):
+    driver = _patch_login(monkeypatch, FakeDriver(flips_after=3))
+    slept = []
+    clock = iter([0, 1, 2, 3, 4, 5, 6, 7, 8])
+
+    result = login_check.wait_for_manual_login(
+        driver, timeout=60, poll=5, sleep=slept.append, clock=lambda: next(clock))
+
+    assert result is True
+    assert driver.checks == 4
+    assert slept == [5, 5, 5]
+
+
+def test_the_wait_gives_up_rather_than_hanging(monkeypatch):
+    """The fix must not replace a silent forever-block with a quiet one."""
+    driver = _patch_login(monkeypatch, FakeDriver(flips_after=None))
+    ticks = iter([0] + [i * 10 for i in range(1, 20)])
+
+    result = login_check.wait_for_manual_login(
+        driver, timeout=30, poll=10, sleep=lambda s: None, clock=lambda: next(ticks))
+
+    assert result is False
+
+
+def test_an_already_logged_in_session_returns_at_once(monkeypatch):
+    driver = _patch_login(monkeypatch, FakeDriver(flips_after=0))
+    slept = []
+    result = login_check.wait_for_manual_login(
+        driver, timeout=60, poll=5, sleep=slept.append, clock=lambda: 0)
+    assert result is True
+    assert slept == []          # never waits when there is nothing to wait for
+
+
+def test_no_bare_input_remains_in_the_tool():
+    """The last instance of B7 from Phase 3, which converted four others."""
+    source = (Path(__file__).parent.parent / "tools" / "login_check.py").read_text(
+        encoding="utf-8")
+    # A real call has an argument or is bare `input()` awaiting a keypress; the
+    # docstring names ``input()`` when describing what was removed. Match the
+    # statement form, not the prose.
+    assert not re.search(r"^\s*(?:\w+\s*=\s*)?input\(", source, re.M)
+
+
+def test_the_wait_does_not_reload_the_page(monkeypatch):
+    """A reload mid-login wipes a half-typed form or a verification challenge."""
+    class Strict(FakeDriver):
+        def get(self, url):  # pragma: no cover - the assertion is that it is never called
+            raise AssertionError("the wait re-navigated while the user was logging in")
+
+    driver = _patch_login(monkeypatch, Strict(flips_after=1))
+    assert login_check.wait_for_manual_login(
+        driver, timeout=60, poll=1, sleep=lambda s: None, clock=lambda: 0) is True
+
+
+# ─── The credential self-check ────────────────────────────────────────────────
+
+def test_the_check_reports_storage_and_never_the_password(api_client, monkeypatch):
+    api_client.post("/api/profiles", json={
+        "name": "rick", "username": "someone@example.com", "password": "pa55w0rd-secret",
+    })
+    resp = api_client.get("/api/profiles/rick/credential-check")
+    assert resp.status_code == 200
+    data = resp.get_json()
+
+    assert data["username"] == "someone@example.com"
+    assert data["roundtrip_ok"] is True
+    assert data["plaintext_in_file"] is False
+    # Sweep the WHOLE body, not just the fields we expect to be clean.
+    assert "pa55w0rd-secret" not in resp.get_data(as_text=True)
+
+
+def test_the_check_says_what_it_did_not_check(api_client):
+    """The point of the endpoint. Listing what passed while staying quiet about
+    what was never tested is how a partial answer gets read as a whole one."""
+    api_client.post("/api/profiles", json={
+        "name": "rick", "username": "a@b.com", "password": "x",
+    })
+    data = api_client.get("/api/profiles/rick/credential-check").get_json()
+    assert data["checked"]
+    joined = " ".join(data["not_checked"]).lower()
+    assert "correct on linkedin" in joined
+    assert "will not sign in" in joined
+
+
+def test_a_credential_that_cannot_be_read_back_is_reported(api_client, monkeypatch):
+    api_client.post("/api/profiles", json={
+        "name": "rick", "username": "a@b.com", "password": "x",
+    })
+    monkeypatch.setattr(pm, "get_profile_password", lambda profile, name=None: "")
+    data = api_client.get("/api/profiles/rick/credential-check").get_json()
+    assert data["roundtrip_ok"] is False
+    assert "no password to use" in data["detail"]
+
+
+def test_a_keychain_error_is_reported_not_swallowed(api_client, monkeypatch):
+    api_client.post("/api/profiles", json={
+        "name": "rick", "username": "a@b.com", "password": "x",
+    })
+
+    def boom(profile, name=None):
+        raise RuntimeError("keychain locked")
+
+    monkeypatch.setattr(pm, "get_profile_password", boom)
+    data = api_client.get("/api/profiles/rick/credential-check").get_json()
+    assert data["roundtrip_ok"] is False
+    assert "RuntimeError" in data["detail"]
+
+
+def test_an_unknown_profile_is_a_404(api_client):
+    resp = api_client.get("/api/profiles/nobody/credential-check")
+    assert resp.status_code == 404
+    assert "nobody" in resp.get_json()["error"]
+
+
+def test_the_check_never_touches_the_browser(api_client, monkeypatch):
+    """It must be usable when there is no session at all, which is exactly when
+    someone reaches for it."""
+    def explode(*a, **k):  # pragma: no cover - asserted by never being hit
+        raise AssertionError("the credential check opened a browser")
+
+    monkeypatch.setattr(pm, "create_driver", explode)
+    api_client.post("/api/profiles", json={
+        "name": "rick", "username": "a@b.com", "password": "x",
+    })
+    assert api_client.get("/api/profiles/rick/credential-check").status_code == 200
