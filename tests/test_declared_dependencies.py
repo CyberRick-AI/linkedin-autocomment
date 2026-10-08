@@ -24,22 +24,31 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGE_DIR = os.path.join(REPO_ROOT, "linkedin_automation")
 REQUIREMENTS = os.path.join(REPO_ROOT, "requirements.txt")
+# macOS-only extras for the menu bar app. Kept out of requirements.txt so no
+# Windows or Linux install pulls in a Cocoa binding, but held to the same rule:
+# what the package imports, some requirements file must declare.
+REQUIREMENTS_MACOS = os.path.join(REPO_ROOT, "requirements-macos.txt")
 
 # Import name -> distribution name, where they differ.
 IMPORT_TO_DISTRIBUTION = {
     "bs4": "beautifulsoup4",
     "dotenv": "python-dotenv",
     "webdriver_manager": "webdriver-manager",
+    # PyObjC, imported only by macapp_ui (macOS).
+    "AppKit": "pyobjc-framework-cocoa",
+    "Foundation": "pyobjc-framework-cocoa",
+    "WebKit": "pyobjc-framework-webkit",
+    "objc": "pyobjc-core",
 }
 
 # Shipped with Python, so never declared.
 STDLIB = set(sys.stdlib_module_names)
 
 
-def _declared_distributions():
-    """Distribution names from requirements.txt, lowercased, comments stripped."""
+def _declared_distributions(path=REQUIREMENTS):
+    """Distribution names from a requirements file, lowercased, comments stripped."""
     out = set()
-    with open(REQUIREMENTS, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.split("#", 1)[0].strip()
             if not line:
@@ -73,7 +82,7 @@ def _imported_top_level_modules():
 
 
 def test_every_third_party_import_is_declared():
-    declared = _declared_distributions()
+    declared = _declared_distributions() | _declared_distributions(REQUIREMENTS_MACOS)
     undeclared = []
     for module in sorted(_imported_top_level_modules()):
         if module in STDLIB or module == "linkedin_automation":
@@ -99,3 +108,11 @@ def test_requirements_are_pinned():
             if line and "==" not in line:
                 unpinned.append(line)
     assert not unpinned, f"unpinned requirements: {unpinned}"
+
+
+@pytest.mark.parametrize("distribution",
+                         ["pyobjc-framework-cocoa", "pyobjc-framework-webkit"])
+def test_macos_extras_stay_out_of_requirements_txt(distribution):
+    """The menu bar app is macOS-only; Windows and Linux must not install Cocoa."""
+    assert distribution not in _declared_distributions()
+    assert distribution in _declared_distributions(REQUIREMENTS_MACOS)

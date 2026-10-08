@@ -30,6 +30,8 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
 
+from . import platform_compat
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -751,7 +753,9 @@ def create_driver(profile_name: str = None, headless: bool = False,
     if headless:
         options.add_argument('--headless=new')
     
-    service = Service(ChromeDriverManager().install())
+    driver_path = ChromeDriverManager().install()
+    platform_compat.ensure_driver_runnable(driver_path)
+    service = Service(driver_path)
     driver = webdriver.Chrome(service=service, options=options)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
     driver.maximize_window()

@@ -11,7 +11,6 @@ import re
 import sys
 import random
 import hashlib
-import subprocess
 import requests
 from datetime import datetime
 from typing import List, Optional, Tuple, Set
@@ -26,6 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from dotenv import load_dotenv
 import logging
+from . import platform_compat
 from . import profile_manager as pm
 from . import human_behavior as hb
 from . import post_store
@@ -670,12 +670,12 @@ class LinkedInScraper:
 
     @staticmethod
     def _get_clipboard() -> str:
-        """Read the Windows clipboard via PowerShell (fallback only)."""
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return (result.stdout or "").strip()
+        """Read the OS clipboard (fallback only).
+
+        Delegates to ``platform_compat``, which picks the right reader per OS:
+        PowerShell on Windows, pbpaste on macOS, xclip/xsel/wl-paste on Linux.
+        """
+        return platform_compat.read_clipboard()
 
     def _dismiss(self):
         """Press Escape to close any open dropdown/toast."""
@@ -1654,6 +1654,7 @@ class LinkedInAIPostFinder:
 
 def main():
     """Main entry point"""
+    platform_compat.exit_cleanly_on_termination()
     import argparse
 
     # Ensure emoji in console output (✅/❌/✓) don't crash under the Windows

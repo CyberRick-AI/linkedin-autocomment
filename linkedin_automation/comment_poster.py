@@ -23,6 +23,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from dotenv import load_dotenv
 import logging
+from . import platform_compat
 from . import profile_manager as pm
 from . import human_behavior as hb
 from . import post_urn
@@ -1389,19 +1390,20 @@ class LinkedInCommentPoster:
 
     def post_comment_ctrl_enter(self, comment_input, comment_text, before=None):
         """Keyboard submit, used as the fallback after a click that did nothing."""
-        self.logger.info("Falling back to the Ctrl+Enter keyboard submit...")
+        label = "Cmd+Enter" if platform_compat.IS_MACOS else "Ctrl+Enter"
+        self.logger.info(f"Falling back to the {label} keyboard submit...")
         try:
             # Focus FIRST. The shortcut goes wherever focus is, and after the
             # click above that is the button, not the editor.
             self.focus_comment_box(comment_input)
             hb.human_sleep(0.4, 1.0)
-            comment_input.send_keys(Keys.CONTROL + Keys.ENTER)
+            comment_input.send_keys(platform_compat.submit_modifier() + Keys.ENTER)
             hb.human_sleep(2.5, 3.5)
             if self.verify_comment_posted(comment_input, comment_text, before):
-                self.logger.info("Comment posted via Ctrl+Enter")
+                self.logger.info(f"Comment posted via {label}")
                 return True
         except Exception as e:
-            self.logger.debug(f"Ctrl+Enter failed: {e}")
+            self.logger.debug(f"{label} failed: {e}")
         return False
 
     def capture_submit_failure(self, comment_text, before, reason):
@@ -2117,6 +2119,7 @@ class LinkedInCommentPoster:
 
 def main():
     """Main entry point."""
+    platform_compat.exit_cleanly_on_termination()
     import argparse
     
     parser = argparse.ArgumentParser(description='Post generated comments to LinkedIn')

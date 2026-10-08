@@ -463,7 +463,11 @@ Length: {length_instruction}"""
             options.add_argument('--window-size=1920,1080')
             options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36')
 
-            service = Service(ChromeDriverManager().install())
+            from . import platform_compat
+
+            driver_path = ChromeDriverManager().install()
+            platform_compat.ensure_driver_runnable(driver_path)
+            service = Service(driver_path)
             driver = webdriver.Chrome(service=service, options=options)
 
             try:

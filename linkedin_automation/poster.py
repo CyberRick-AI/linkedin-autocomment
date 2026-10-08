@@ -20,6 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from dotenv import load_dotenv
 
+from . import platform_compat
 from . import profile_manager as pm
 from . import human_behavior as hb
 from .failure_capture import capture_failure
@@ -1415,6 +1416,7 @@ class LinkedInPoster:
 
 def main():
     """CLI entry point: publish a post to the LinkedIn feed."""
+    platform_compat.exit_cleanly_on_termination()
     parser = argparse.ArgumentParser(description='LinkedIn Post Creator')
     parser.add_argument('text', nargs='?', help='Post text (or use --file)')
     parser.add_argument('--file', type=str, help='Read post text from file')

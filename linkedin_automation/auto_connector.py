@@ -27,6 +27,7 @@ from selenium.common.exceptions import (
 )
 from dotenv import load_dotenv
 
+from . import platform_compat
 from . import profile_manager as pm
 from . import human_behavior as hb
 from .failure_capture import capture_failure
@@ -1454,6 +1455,7 @@ class LinkedInAutoConnector:
 
 def main():
     """CLI entry point: send connection requests from a search-results URL."""
+    platform_compat.exit_cleanly_on_termination()
     parser = argparse.ArgumentParser(
         description='LinkedIn Auto-Connector — send connection requests from search results',
         formatter_class=argparse.RawDescriptionHelpFormatter,

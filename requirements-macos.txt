@@ -1,0 +1,19 @@
+# macOS-only extras for the menu bar app and its window (ROADMAP Phase 14).
+#
+# Deliberately NOT in requirements.txt. This project is contributed upstream to
+# a cross-platform pure-Python repo, and the app is macOS-only, so nobody on
+# Linux or Windows — and not the upstream maintainer — should be made to
+# install a Cocoa binding to run the dashboard. Everything outside
+# linkedin_automation/macapp_ui.py works without these.
+#
+# Install with:
+#   uv pip install -r requirements-macos.txt
+#
+# Only the two frameworks actually used, rather than the `pyobjc` meta-package
+# which pulls in around forty of them.
+# pyobjc-core is pinned explicitly: macapp_ui imports `objc` directly, and the
+# frameworks only ask for core >= their own version, so left alone it floats to
+# a newer major than the frameworks it has to match.
+pyobjc-core==11.1
+pyobjc-framework-Cocoa==11.1
+pyobjc-framework-WebKit==11.1
