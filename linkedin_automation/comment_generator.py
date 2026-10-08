@@ -1,5 +1,5 @@
 # IMPROVED VERSION - Comments sound more human, less AI-generated
-"""Generate authentic-sounding replies with OpenAI (GPT-4o-mini), per platform.
+"""Generate authentic-sounding replies through the configured AI provider, per platform.
 
 Reads scraped posts (``ai_posts_*.json``), generates a draft per post, and
 rejects/regenerates output that trips the AI-pattern banned-phrase filters.
@@ -11,6 +11,11 @@ requires an explicit ``platform`` — there is no default, because a default wou
 resolve to LinkedIn and produce LinkedIn-voiced text for another platform without
 failing anything. LinkedIn's rendered prompts are byte-identical to the
 pre-parameterization literals, proven by ``tests/goldens/linkedin_prompts.json``.
+
+**Provider-neutral too.** Which vendor and model write the drafts is per-profile
+configuration (the ``provider`` block, set on the dashboard's Settings tab), not
+a hardcoded OpenAI client. Every call goes through :mod:`providers`, which
+returns one normalised completion shape whatever the vendor.
 """
 
 import json
@@ -34,11 +39,13 @@ try:
 except Exception:
     pass
 
-from openai import OpenAI
 from dotenv import load_dotenv
 import argparse
 import logging
 import random
+import sys
+
+from . import providers
 
 load_dotenv()
 
@@ -49,6 +56,11 @@ try:
 except ImportError:
     HAS_PROFILE_MANAGER = False
 
+# The profile manager is an optional import here, so the exit codes cannot be
+# read off it unconditionally. Same values, stated once.
+EXIT_OK = pm.EXIT_OK if HAS_PROFILE_MANAGER else 0
+EXIT_ERROR = pm.EXIT_ERROR if HAS_PROFILE_MANAGER else 1
+
 # Lifecycle store (NEW → GENERATED on each accepted comment). Optional so the
 # generator still runs in the degraded no-profile-manager mode.
 try:
@@ -58,9 +70,11 @@ except ImportError:
     HAS_POST_STORE = False
 
 
-# The relevance check is always a cheap model regardless of the generation model
-# the user picked, since it's one extra call per accepted comment.
-RELEVANCE_MODEL = "gpt-4o-mini"
+# The relevance check is always the configured provider's cheap default model,
+# regardless of the generation model the user picked, since it's one extra call
+# per accepted comment. Resolved per instance as ``self.relevance_model``, so it
+# follows the provider rather than staying pinned to OpenAI: a profile switched
+# to Anthropic must not still be billed by OpenAI for every relevance check.
 
 # The topic-discipline block now lives in ``platform_policy.on_topic_rules``
 # so its nouns follow the platform ("the POST's topic" / "the TWEET's topic").
@@ -76,11 +90,10 @@ class AuthenticCommentGenerator:
     explicit argument at every call site is the whole guard.
     """
 
-    def __init__(self, input_file: str, model: str = "gpt-4o-mini",
+    def __init__(self, input_file: str, model: str = None,
                  max_comments: int = None, profile_name: str = None,
                  *, platform: str):
         self.input_file = input_file
-        self.model = model
         # Raises UnknownPlatform rather than falling back — see policy_for.
         self.platform = platform
         self.policy = platform_policy.policy_for(platform)
@@ -88,10 +101,9 @@ class AuthenticCommentGenerator:
         self.length = self.policy.length
         # Optional cap on how many comments to generate. None (the default) means
         # no cap — generate for every post worth engaging. Comment generation is
-        # OpenAI-only (no LinkedIn interaction), so there's no rate-limit reason
+        # API-only (no LinkedIn interaction), so there's no rate-limit reason
         # to cap it; this is just an optional ceiling the user can set.
         self.max_comments = max_comments
-        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         # Populated by select_best_posts with every post it turned down, so
         # generate_all_comments can move them out of NEW (see
         # _trash_rejected_in_store). Initialized here so the attribute always
@@ -130,6 +142,21 @@ class AuthenticCommentGenerator:
             self.config = pm.get_profile_config(resolved_name)
         else:
             self.config = {}
+
+        # Provider and model come from that config, so switching to Anthropic or
+        # xAI needs no code change. An explicit ``model`` argument still wins,
+        # which is what --model on the CLI uses. Constructed after the config
+        # load, so a bad provider name or a missing key fails here at startup
+        # rather than at the first generation call mid-run.
+        self.provider_name, configured_model, base_url = \
+            providers.resolve_provider_config(self.config)
+        self.model = model or configured_model
+        self.provider = providers.get_provider(self.provider_name, base_url=base_url)
+        # The relevance check is a cheap yes/no on the same provider. Falls back
+        # to the generation model for providers with no cheap default of their
+        # own (Groq, Together, a custom endpoint).
+        self.relevance_model = \
+            providers.get_spec(self.provider_name).default_model or self.model
 
         # When true (default), every accepted comment is validated for on-topic
         # relevance with one extra cheap call, and off-topic/forced-expertise
@@ -199,35 +226,35 @@ RESPOND WITH JSON:
 }}"""
     
     def _log_api_usage(self, endpoint: str, est_cost: float, model: str = None):
-        """Append a paid-API-call record to api_usage.jsonl (CLAUDE.md cost discipline)."""
-        try:
-            with open("api_usage.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "timestamp": datetime.now().isoformat(),
-                    "api": "openai",
-                    "model": model or self.model,
-                    "endpoint": endpoint,
-                    "estimated_cost": est_cost,
-                }) + "\n")
-        except Exception:
-            self.logger.debug("Failed to write api_usage.jsonl", exc_info=True)
+        """Append a paid-API-call record to api_usage.jsonl (CLAUDE.md cost discipline).
+
+        Delegates to the one writer in ``providers`` rather than opening the
+        file itself, so the ledger has a single implementation and a single
+        redirectable path. That also fixes the provider label, which was
+        hardcoded to "openai" and so would have mislabelled every Anthropic or
+        DeepSeek call as OpenAI spend.
+        """
+        providers.log_api_usage(
+            provider=self.provider_name,
+            model=model or self.model,
+            endpoint=endpoint,
+            est_cost=est_cost,
+        )
 
     def evaluate_post_quality(self, post: Dict) -> Dict:
         """Evaluate if post is worth commenting on."""
         try:
             # GPT-4o-mini per PROJECT.md (was hardcoded gpt-3.5-turbo).
             self._log_api_usage("chat.completions:evaluate", 0.0002)
-            response = self.client.chat.completions.create(
+            completion = self.provider.complete(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self.register.eval_system_message()},
-                    {"role": "user", "content": self.enhanced_quality_filter_prompt(post)}
-                ],
+                system=self.register.eval_system_message(),
+                user=self.enhanced_quality_filter_prompt(post),
                 temperature=0.3,
-                response_format={"type": "json_object"}
+                json_object=True,
             )
 
-            return json.loads(response.choices[0].message.content)
+            return json.loads(completion.text)
 
         except Exception as e:
             self.logger.error(f"Evaluation error: {e}")
@@ -239,7 +266,7 @@ RESPOND WITH JSON:
         """The on-topic YES/NO prompt, in the platform's nouns.
 
         Extracted from :meth:`check_relevance` so it can be asserted byte-for-byte
-        without mocking the OpenAI client.
+        without mocking the provider.
         """
         r = self.register
         post_text = (post.get('text') or '')[:600]
@@ -255,26 +282,24 @@ RESPOND WITH JSON:
     def check_relevance(self, post: Dict, comment: str) -> bool:
         """Lightweight YES/NO check that a comment stays on the post's topic.
 
-        Uses the cheap RELEVANCE_MODEL (gpt-4o-mini) and is logged to
+        Uses the provider's cheap default model (``self.relevance_model``) and is logged to
         api_usage.jsonl. Returns True when the comment directly responds to the
         post without forcing in an unrelated industry/expertise angle. Defaults
         to True on any API error so a transient failure never blocks generation.
         """
         prompt = self._relevance_prompt(post, comment)
         try:
-            self._log_api_usage("chat.completions:relevance", 0.0001, model=RELEVANCE_MODEL)
-            response = self.client.chat.completions.create(
-                model=RELEVANCE_MODEL,
-                messages=[
-                    {"role": "system",
-                     "content": "You judge whether a comment is on-topic for a post. "
-                                "Answer only YES or NO."},
-                    {"role": "user", "content": prompt},
-                ],
+            self._log_api_usage("chat.completions:relevance", 0.0001,
+                                model=self.relevance_model)
+            completion = self.provider.complete(
+                model=self.relevance_model,
+                system="You judge whether a comment is on-topic for a post. "
+                       "Answer only YES or NO.",
+                user=prompt,
                 temperature=0.0,
                 max_tokens=3,
             )
-            answer = (response.choices[0].message.content or "").strip().upper()
+            answer = (completion.text or "").strip().upper()
             relevant = answer.startswith("YES")
             if not relevant:
                 self.logger.info("  Relevance check: NO (off-topic / forced expertise) — regenerating")
@@ -652,20 +677,15 @@ Write ONLY the {r.action} text:"""
                 temp = random.uniform(0.6 + (attempt * 0.1), 0.9)
 
                 self._log_api_usage("chat.completions:generate", 0.0003)
-                response = self.client.chat.completions.create(
+                completion = self.provider.complete(
                     model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": self.register.system_voice
-                        },
-                        {"role": "user", "content": prompt}
-                    ],
+                    system=self.register.system_voice,
+                    user=prompt,
                     temperature=temp,
-                    max_tokens=100  # Force brevity
+                    max_tokens=100,  # Force brevity
                 )
-                
-                comment = response.choices[0].message.content.strip()
+
+                comment = (completion.text or "").strip()
                 comment = comment.strip('"\'')  # Remove quotes if added
                 
                 # Check authenticity with new detector
@@ -848,7 +868,7 @@ Write ONLY the {r.action} text:"""
         if len(best_posts) >= 100:
             self.logger.warning(
                 f"⚠️  About to generate {len(best_posts)} comments in one run — that's "
-                f"a lot of OpenAI calls. Proceeding as requested; watch api_usage.jsonl "
+                f"a lot of {self.provider_name} calls. Proceeding as requested; watch api_usage.jsonl "
                 f"and the PROJECT.md $5/session cap."
             )
 
@@ -1024,7 +1044,10 @@ def build_arg_parser():
     """
     parser = argparse.ArgumentParser(description='Generate authentic comments/replies')
     parser.add_argument('input_file', help='Path to AI posts JSON')
-    parser.add_argument('--model', default='gpt-4o-mini', help='Model to use')
+    # No default. A default here overrode the provider model chosen in
+    # Settings, so a profile configured for xAI asked xAI for gpt-4o-mini.
+    parser.add_argument('--model', default=None,
+                        help="Model to use (default: the profile config's provider model)")
     parser.add_argument('--limit', type=int, default=None,
                         help='Max drafts to generate (default: no limit, generate for all engaging posts)')
     parser.add_argument('--profile', type=str, default=None, help='Profile name (for data directory)')
@@ -1042,20 +1065,31 @@ def main(argv=None):
     """CLI entry point: generate drafts for a scraped posts JSON file."""
     args = build_arg_parser().parse_args(argv)
 
-    if not os.getenv('OPENAI_API_KEY'):
-        print("Error: OPENAI_API_KEY missing")
-        return
+    # No OPENAI_API_KEY check here. It predates the provider layer and refused
+    # to run a profile configured for xAI or Anthropic, naming the wrong
+    # vendor's variable. The provider layer raises an actionable ProviderError
+    # naming the provider that is actually selected and the variable it needs.
+    #
+    # And it printed the error and returned None — exit 0 — so the dashboard's
+    # return-code check passed and the operator was shown a downstream symptom
+    # instead of the cause. A provider failure now exits non-zero. Any other
+    # exception still propagates as before (traceback, exit 1).
+    try:
+        generator = AuthenticCommentGenerator(
+            args.input_file, args.model, args.limit, profile_name=args.profile,
+            platform=args.platform
+        )
+        results = generator.generate_all_comments()
+    except providers.ProviderError as e:
+        print(f"\n❌ {e}")
+        return EXIT_ERROR
 
-    generator = AuthenticCommentGenerator(
-        args.input_file, args.model, args.limit, profile_name=args.profile,
-        platform=args.platform
-    )
-    
-    results = generator.generate_all_comments()
-    
     if results:
         print(f"\n✓ Generated {len(results)} authentic comments")
+    # An empty result is not a failure: every post may simply have been turned
+    # down, which generate_all_comments has already logged and recorded.
+    return EXIT_OK
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

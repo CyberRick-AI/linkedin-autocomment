@@ -38,8 +38,9 @@ try:
 except Exception:
     pass
 
-from openai import OpenAI
 from dotenv import load_dotenv
+
+from . import providers
 
 load_dotenv()
 
@@ -212,21 +213,31 @@ class PostQueue:
 # ─── Post Generator ──────────────────────────────────────────────────────────
 
 class PostGenerator:
-    """Generate LinkedIn posts using OpenAI."""
+    """Generate LinkedIn posts through the profile's configured AI provider."""
 
-    def __init__(self, profile_name: str = None, model: str = "gpt-4o-mini"):
-        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        self.model = model
+    def __init__(self, profile_name: str = None, model: str = None):
         self.queue = PostQueue(profile_name)
         self.profile_name = profile_name
 
         # Per-profile post_generator config; falls back to hardcoded defaults.
+        config = {}
         pg = {}
         if HAS_PM:
             try:
-                pg = pm.get_profile_config(profile_name).get("post_generator", {}) or {}
+                config = pm.get_profile_config(profile_name) or {}
+                pg = config.get("post_generator", {}) or {}
             except Exception:
                 logger.debug("Could not load post_generator config; using defaults", exc_info=True)
+
+        # Provider and model are configuration (the profile's ``provider``
+        # block, set on the dashboard's Settings tab). Resolved here, at
+        # construction, so a bad provider name or a missing key fails before the
+        # first post is queued rather than partway through a run. An explicit
+        # ``model`` still wins; that is what --model on the CLI is for.
+        self.provider_name, configured_model, base_url = \
+            providers.resolve_provider_config(config)
+        self.model = model or configured_model
+        self.provider = providers.get_provider(self.provider_name, base_url=base_url)
         self.pg_persona = pg.get("persona") or DEFAULT_PERSONA
         self.pg_tone = pg.get("tone") or ""
         self.pg_voice = pg.get("voice") or ""
@@ -241,19 +252,16 @@ class PostGenerator:
         written; this module never did, so post generation was invisible spend —
         and scheduled generation would have made it recurring invisible spend.
         Same format and same best-effort failure handling, so one ledger covers
-        both generators.
+        both generators — and the same writer: ``providers.log_api_usage``,
+        which labels the record with the provider actually used rather than a
+        hardcoded "openai".
         """
-        try:
-            with open("api_usage.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "timestamp": datetime.now().isoformat(),
-                    "api": "openai",
-                    "model": model or self.model,
-                    "endpoint": endpoint,
-                    "estimated_cost": est_cost,
-                }) + "\n")
-        except Exception:
-            logger.debug("Failed to write api_usage.jsonl", exc_info=True)
+        providers.log_api_usage(
+            provider=self.provider_name,
+            model=model or self.model,
+            endpoint=endpoint,
+            est_cost=est_cost,
+        )
 
     def _build_system_prompt(self, article: bool = False) -> str:
         """Build the system prompt from the profile config (persona/tone/voice/avoid)
@@ -309,17 +317,15 @@ Write ONLY the post text, nothing else."""
         logger.info(f"Generating {style} post about: {topic[:60]}...")
 
         self._log_api_usage("chat.completions:post_thought_leadership", 0.0004)
-        response = self.client.chat.completions.create(
+        completion = self.provider.complete(
             model=self.model,
-            messages=[
-                {"role": "system", "content": self._build_system_prompt()},
-                {"role": "user", "content": prompt}
-            ],
+            system=self._build_system_prompt(),
+            user=prompt,
             temperature=0.9,
             max_tokens=500,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = (completion.text or "").strip()
         # Clean up any quotes the model might wrap it in
         if text.startswith('"') and text.endswith('"'):
             text = text[1:-1]
@@ -374,17 +380,15 @@ Length: {length_instruction}"""
         logger.info("Generating article reaction post...")
 
         self._log_api_usage("chat.completions:post_article", 0.0006)
-        response = self.client.chat.completions.create(
+        completion = self.provider.complete(
             model=self.model,
-            messages=[
-                {"role": "system", "content": self._build_system_prompt(article=True)},
-                {"role": "user", "content": prompt}
-            ],
+            system=self._build_system_prompt(article=True),
+            user=prompt,
             temperature=0.85,
             max_tokens=500,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = (completion.text or "").strip()
         if text.startswith('"') and text.endswith('"'):
             text = text[1:-1]
 
@@ -623,13 +627,17 @@ def main():
     gen_p.add_argument('--count', type=int, default=1, help='Number of posts to generate')
     gen_p.add_argument('--style', type=str, choices=POST_STYLES, help='Post style')
     gen_p.add_argument('--topic', type=str, help='Custom topic')
-    gen_p.add_argument('--model', type=str, default='gpt-4o-mini', help='OpenAI model')
+    # No default model: the profile's provider decides (Settings tab). A default
+    # here would ask a non-OpenAI provider for an OpenAI model.
+    gen_p.add_argument('--model', type=str, default=None,
+                       help="Model override (default: the profile's provider model)")
     gen_p.add_argument('--profile', type=str, default=None)
 
     # article
     art_p = subparsers.add_parser('article', help='Generate post from article URL')
     art_p.add_argument('url', help='Article URL')
-    art_p.add_argument('--model', type=str, default='gpt-4o-mini', help='OpenAI model')
+    art_p.add_argument('--model', type=str, default=None,
+                       help="Model override (default: the profile's provider model)")
     art_p.add_argument('--profile', type=str, default=None)
 
     # queue

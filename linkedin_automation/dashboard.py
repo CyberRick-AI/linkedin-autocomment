@@ -25,6 +25,7 @@ from .comment_fields import normalize_comment_fields, comments_to_txt
 from . import platform_policy
 from . import profile_manager as pm
 from . import post_store
+from . import providers
 from . import scheduler as scheduler_mod
 from . import post_drain as post_drain_mod
 from . import buffer_client
@@ -380,6 +381,205 @@ def reset_profile_config_route(name):
     return jsonify({"ok": True, "config": pm.reset_profile_config(name)})
 
 
+# ─── API: Settings (generation provider) ──────────────────────────────────────
+#
+# The API key is write-only across this whole section. A GET never returns it,
+# and the only part of a stored key that ever leaves the process is its last
+# four characters, which is enough to confirm *which* key is installed and not
+# enough to use it. See ROADMAP Phase 8.
+
+@app.route('/api/settings/providers', methods=['GET'])
+def get_providers_route():
+    """GET /api/settings/providers — the provider catalogue plus key status.
+
+    Drives the Settings screen's dropdown. ``key`` per provider reports whether
+    a key is set, where it came from, and its last four characters only.
+    """
+    return jsonify({
+        "providers": [
+            {
+                "name": spec.name,
+                "label": spec.label,
+                "default_model": spec.default_model,
+                "default_model_verified": spec.default_model_verified,
+                "base_url": spec.base_url or "",
+                "requires_base_url": spec.requires_base_url,
+                "local": spec.local,
+                "env_var": spec.key_env,
+                "key": {"set": True, "source": "local", "last4": ""} if spec.local
+                       else pm.api_key_status(spec.name),
+            }
+            for spec in providers.SPECS.values()
+        ],
+        "default_provider": providers.DEFAULT_PROVIDER,
+        "credential_store_available": pm.keyring_available(),
+    })
+
+
+@app.route('/api/profiles/<name>/provider', methods=['GET'])
+def get_profile_provider_route(name):
+    """GET /api/profiles/<name>/provider — this profile's provider and model."""
+    try:
+        provider, model, base_url = providers.resolve_provider_config(
+            pm.get_profile_config(name))
+    except providers.ProviderError as e:
+        # A config saved with a bad provider name, a custom provider with no
+        # base URL, or a provider with no model. Report it rather than papering
+        # over it with a default, so the user can see what to fix.
+        return jsonify({"error": str(e)}), 400
+    spec = providers.get_spec(provider)
+    return jsonify({
+        "provider": provider,
+        "label": spec.label,
+        "model": model,
+        "base_url": base_url or "",
+        # A local provider needs no key, so a "no key set" warning against
+        # Ollama would be wrong rather than merely noisy.
+        "local": bool(spec.local),
+        "key": pm.api_key_status(provider),
+    })
+
+
+@app.route('/api/profiles/<name>/provider', methods=['POST'])
+def set_profile_provider_route(name):
+    """POST /api/profiles/<name>/provider — set this profile's provider/model.
+
+    Body: ``{"provider": "openai"|"anthropic"|"xai", "model": "<optional>"}``.
+
+    Writes only the ``provider`` block, so persona, tone, and voice are left
+    untouched — changing where the text is generated must not change the voice
+    it is generated in.
+    """
+    body = request.json if request.is_json else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    provider = (body.get("provider") or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    model = body.get("model")
+    if model is not None and not isinstance(model, str):
+        return jsonify({"error": "model must be a string"}), 400
+    spec = providers.get_spec(provider)
+    model = (model or "").strip() or spec.default_model
+
+    base_url = body.get("base_url")
+    if base_url is not None and not isinstance(base_url, str):
+        return jsonify({"error": "base_url must be a string"}), 400
+    base_url = (base_url or "").strip()
+
+    # Validate the combination before writing it, so a config that cannot
+    # resolve is never persisted. This is what makes the Custom option safe:
+    # a base URL is demanded up front rather than at the first generation run.
+    candidate = {"name": provider, "model": model}
+    if base_url:
+        candidate["base_url"] = base_url
+    try:
+        providers.resolve_provider_config({"provider": candidate})
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    config = pm.get_profile_config(name)
+    config["provider"] = candidate
+    pm.save_profile_config(name, config)
+
+    return jsonify({
+        "ok": True,
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "key": pm.api_key_status(provider),
+    })
+
+
+@app.route('/api/settings/api-key', methods=['POST'])
+def set_api_key_route():
+    """POST /api/settings/api-key — store a provider's API key in the OS store.
+
+    Body: ``{"provider": "...", "api_key": "..."}``.
+
+    The key goes to the credential store, never to ``profiles.json`` and never
+    to ``.env``. The response echoes only the last four characters.
+    """
+    body = request.json if request.is_json else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    provider = (body.get("provider") or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    api_key = body.get("api_key")
+    if not isinstance(api_key, str) or not api_key.strip():
+        return jsonify({"error": "api_key is required and must be a non-empty string"}), 400
+
+    try:
+        pm.set_api_key(provider, api_key)
+    except RuntimeError as e:
+        # No OS credential store. Actionable, and deliberately not a 500.
+        return jsonify({"error": str(e)}), 409
+
+    return jsonify({"ok": True, "provider": provider, "key": pm.api_key_status(provider)})
+
+
+@app.route('/api/settings/test-connection', methods=['POST'])
+def test_connection_route():
+    """POST /api/settings/test-connection — probe a provider with one small call.
+
+    Body: ``{"provider": "...", "model": "...", "base_url": "..."}``.
+
+    **This is the one endpoint in the project that deliberately spends money**,
+    and it spends it only because a human pressed the button. Two calls maximum,
+    matching the retry cap in PROJECT.md, logged to ``api_usage.jsonl`` before
+    each call.
+
+    It exists because provider quirks cannot be enumerated in advance. Finding
+    out that a model rejects temperature or leaks its reasoning is far cheaper
+    here than during a real generation run.
+    """
+    body = request.json if request.is_json else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    provider = (body.get("provider") or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    for field_name in ("model", "base_url"):
+        value = body.get(field_name)
+        if value is not None and not isinstance(value, str):
+            return jsonify({"error": f"{field_name} must be a string"}), 400
+
+    report = providers.probe(
+        provider,
+        model=(body.get("model") or "").strip() or None,
+        base_url=(body.get("base_url") or "").strip() or None,
+    )
+    # A failed probe is a 200 with ok=False, not an HTTP error: the report is
+    # the result, and the UI needs to render why it failed.
+    return jsonify(report)
+
+
+@app.route('/api/settings/api-key/<provider>', methods=['DELETE'])
+def delete_api_key_route(provider):
+    """DELETE /api/settings/api-key/<provider> — forget a stored API key."""
+    provider = (provider or "").strip().lower()
+    try:
+        providers.validate_provider(provider)
+    except providers.ProviderError as e:
+        return jsonify({"error": str(e)}), 400
+
+    pm.delete_api_key(provider)
+    return jsonify({"ok": True, "provider": provider, "key": pm.api_key_status(provider)})
+
+
 # ─── API: Posts ───────────────────────────────────────────────────────────────
 
 @app.route('/api/posts/<profile_name>', methods=['GET'])
@@ -676,9 +876,13 @@ def generate_comments(profile_name):
     the CLI: ``python -m linkedin_automation.comment_generator <file>``.
     """
     body = request.json or {}
-    model = body.get('model', 'gpt-4o-mini')
+    # No default model. The profile's provider (Settings tab) decides it; a
+    # default here — it used to be 'gpt-4o-mini' — overrode Settings on every
+    # run, so a profile configured for xAI asked xAI for an OpenAI model. An
+    # explicit model in the body is still honoured as an override.
+    model = body.get('model') or None
     # Optional cap. None/blank/<=0 means "generate for all engaging posts" — there
-    # is no rate-limit reason to cap (it's OpenAI-only). A positive int is a ceiling.
+    # is no rate-limit reason to cap (it's API-only). A positive int is a ceiling.
     limit = body.get('limit')
     if limit in (None, "", 0):
         limit = None
@@ -714,7 +918,6 @@ def generate_comments(profile_name):
         cmd = [
             sys.executable, "-m", "linkedin_automation.comment_generator",
             infile,
-            "--model", mdl,
             "--profile", pname,
             # Named explicitly, never defaulted. This endpoint is LinkedIn-only
             # until Phase F gives the routes a ?platform= parameter; when it
@@ -723,6 +926,11 @@ def generate_comments(profile_name):
             # "linkedin" in the diff rather than an invisible default.
             "--platform", post_store.LINKEDIN,
         ]
+        # Only pass --model when the caller genuinely overrode it. Passing None
+        # would crash the subprocess build; passing a default would silently
+        # override the provider model chosen in Settings.
+        if mdl:
+            cmd.extend(["--model", mdl])
         # Only pass --limit when the user set a cap; omitting it means no limit.
         if lmt is not None:
             cmd.extend(["--limit", str(lmt)])
@@ -742,8 +950,13 @@ def generate_comments(profile_name):
         if json_files:
             log_job(jid, f"Comments saved to: {json_files[0]}")
             return {"file": json_files[0]}
-        
-        raise RuntimeError("No comments file found")
+
+        # Reached only when the generator exited 0 and still wrote nothing. A
+        # bare "No comments file found" reads as the cause when it is only ever
+        # a symptom of whatever the generator hit, so point at the job log.
+        raise RuntimeError(
+            "The generator finished without writing a comments file. Check the "
+            "job log above for the reason it gave.")
     
     run_job(job_id, do_generate, profile_name, input_file, model, limit,
             profile=profile_name, task_type="api", category="generate_comments")
@@ -1035,7 +1248,8 @@ def poster_generate(profile_name):
     count = body.get('count', 1)
     style = body.get('style', None)
     topic = body.get('topic', None)
-    model = body.get('model', 'gpt-4o-mini')
+    # None lets the profile's provider decide the model (see generate_comments).
+    model = body.get('model') or None
 
     job_id = f"postgen_{profile_name}_{int(time.time())}"
 
@@ -1065,7 +1279,8 @@ def poster_article(profile_name):
     """Generate a post from an article URL."""
     body = request.json or {}
     url = body.get('url', '')
-    model = body.get('model', 'gpt-4o-mini')
+    # None lets the profile's provider decide the model (see generate_comments).
+    model = body.get('model') or None
 
     if not url:
         return jsonify({"error": "url is required"}), 400

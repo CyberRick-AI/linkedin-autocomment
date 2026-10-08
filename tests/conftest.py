@@ -8,6 +8,7 @@ import pytest
 
 from linkedin_automation import profile_manager as pm
 from linkedin_automation import buffer_client  # noqa: E402
+from linkedin_automation import providers
 from linkedin_automation import dashboard as linkedin_dashboard
 
 
@@ -22,8 +23,12 @@ ACTIVITY_URL = "https://www.linkedin.com/feed/update/urn:li:activity:{}/"
 # that matched that shape would mask every real key it exists to catch.
 DUMMY_API_KEY = "test-dummy-not-a-real-key-0000000000"
 
-# Environment variables that can hold a funded vendor credential.
-API_KEY_ENV_VARS = ("OPENAI_API_KEY",)
+# Environment variables that can hold a funded vendor credential. Derived from
+# the provider registry rather than listed, so adding a provider pins its key
+# here too: every remote provider's variable (OPENAI_API_KEY, ANTHROPIC_API_KEY,
+# XAI_API_KEY, ...) is a key that load_dotenv() could otherwise hand a test.
+API_KEY_ENV_VARS = tuple(spec.key_env for spec in providers.SPECS.values()
+                         if spec.key_env)
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +55,23 @@ def _dummy_api_keys(monkeypatch):
     """
     for var in API_KEY_ENV_VARS:
         monkeypatch.setenv(var, DUMMY_API_KEY)
+
+
+@pytest.fixture(autouse=True)
+def cost_ledger(tmp_path, monkeypatch):
+    """Redirect the generators' api_usage.jsonl writes into tmp for every test.
+
+    The provider layer's ``log_api_usage`` is the single writer for generation
+    spend (comment and post generators both delegate to it). Tests exercise the
+    generators, which log a line per would-be call BEFORE making it, so without
+    this every test run would append fake spend to the real, tracked ledger —
+    the same pollution ``_no_live_buffer_calls`` closes for Buffer's writer.
+
+    Returns the redirected path so a test can assert on what was written.
+    """
+    ledger = tmp_path / "api_usage.jsonl"
+    monkeypatch.setattr(providers, "API_USAGE_FILE", str(ledger))
+    return ledger
 
 
 @pytest.fixture(autouse=True)

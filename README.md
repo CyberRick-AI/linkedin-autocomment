@@ -359,7 +359,7 @@ Omitted keys keep the human-like defaults in `default_profile_config.json`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | For comment and post generation |
+| `OPENAI_API_KEY` | For OpenAI | For comment and post generation with the default provider. Other providers (Anthropic, xAI, DeepSeek, Groq, Together, OpenRouter, Mistral, Fireworks, a custom OpenAI-compatible endpoint) read `ANTHROPIC_API_KEY`, `XAI_API_KEY`, etc. The dashboard's **Settings** tab chooses the provider per profile and can store the key in the OS credential store instead, which takes precedence over the variable. Ollama needs no key. |
 | `LINKEDIN_USERNAME` | No | Auto-migrates to a `default` profile on first run |
 | `LINKEDIN_PASSWORD` | No | Auto-migrates to a `default` profile on first run |
 | `LINKEDIN_ALT_USERNAME` | No | Fallback username for auto-migration |

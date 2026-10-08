@@ -2,6 +2,10 @@
   "display_name": "",
   "headline": "",
   "niche": "",
+  "provider": {
+    "name": "openai",
+    "model": "gpt-4o-mini"
+  },
   "post_finder": {
     "keywords_tier1": [
       "artificial intelligence",

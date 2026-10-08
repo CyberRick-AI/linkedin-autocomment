@@ -221,7 +221,6 @@ class LinkedInWorkflowRunner:
             sys.executable, "-m",
             self.comment_module,
             input_file,
-            "--model", self.comment_model,
             "--limit", str(self.comment_limit),
             # Named, never defaulted. This workflow drives LinkedIn end to end
             # (post_finder is LinkedIn's scraper), so the platform is a property
@@ -231,6 +230,11 @@ class LinkedInWorkflowRunner:
         
         if self.profile:
             cmd.extend(["--profile", self.profile])
+        # Only when the operator explicitly overrode it. A default here would
+        # override the provider model chosen in the dashboard's Settings tab,
+        # asking a non-OpenAI provider for an OpenAI model.
+        if self.comment_model:
+            cmd.extend(["--model", self.comment_model])
         
         logger.info(f"Running: {' '.join(cmd)}")
         
@@ -415,8 +419,9 @@ Examples:
     # Comment generator arguments
     parser.add_argument(
         '--model',
-        default='gpt-4o-mini',
-        help='Model for comment generation (default: gpt-4)'
+        default=None,
+        help="Model override for comment generation (default: the profile's "
+             "provider model, set in the dashboard's Settings tab)"
     )
     parser.add_argument(
         '--comment-limit',
@@ -477,8 +482,9 @@ Examples:
             missing_vars.append('LINKEDIN_USERNAME (or run: python linkedin_profile_manager.py add <n>)')
         if not os.getenv('LINKEDIN_PASSWORD') and not os.getenv('LINKEDIN_ALT_PASSWORD'):
             missing_vars.append('LINKEDIN_PASSWORD (or run: python linkedin_profile_manager.py add <n>)')
-    if not args.skip_comments and not os.getenv('OPENAI_API_KEY'):
-        missing_vars.append('OPENAI_API_KEY')
+    # Deliberately no OPENAI_API_KEY check: the provider is per-profile
+    # configuration now, so demanding OpenAI's variable is wrong for every
+    # profile not using OpenAI. The provider layer raises naming the right one.
     
     if missing_vars:
         logger.error("❌ Missing required environment variables:")

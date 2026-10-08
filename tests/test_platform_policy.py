@@ -31,6 +31,7 @@ from linkedin_automation import comment_generator as gen
 from linkedin_automation import platform_policy as pp
 from linkedin_automation import post_store
 from linkedin_automation import profile_manager as pm
+from linkedin_automation import providers
 
 GOLDEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "goldens", "linkedin_prompts.json")
@@ -272,16 +273,10 @@ def test_x_never_truncates_an_over_limit_draft(make_generator, monkeypatch):
     g = make_generator({}, pp.X)
     over_limit = "x" * 400
 
-    class _Msg:
-        content = over_limit
-
-    class _Choice:
-        message = _Msg()
-
-    class _Resp:
-        choices = [_Choice()]
-
-    monkeypatch.setattr(g.client.chat.completions, "create", lambda **kw: _Resp())
+    # Mocked at the provider boundary: the generator calls the configured
+    # provider's complete(), whichever vendor that is.
+    monkeypatch.setattr(g.provider, "complete", lambda **kw: providers.Completion(
+        text=over_limit, model=kw["model"], provider="fake"))
     monkeypatch.setattr(g, "check_relevance", lambda post, comment: True)
     monkeypatch.setattr(g, "_log_api_usage", lambda *a, **k: None)
 
@@ -295,16 +290,10 @@ def test_linkedin_still_returns_a_long_best_attempt(make_generator, monkeypatch)
     g = make_generator({}, pp.LINKEDIN)
     long_draft = " ".join(["evaluation"] * 100)      # 100 words > 70
 
-    class _Msg:
-        content = long_draft
-
-    class _Choice:
-        message = _Msg()
-
-    class _Resp:
-        choices = [_Choice()]
-
-    monkeypatch.setattr(g.client.chat.completions, "create", lambda **kw: _Resp())
+    # Mocked at the provider boundary: the generator calls the configured
+    # provider's complete(), whichever vendor that is.
+    monkeypatch.setattr(g.provider, "complete", lambda **kw: providers.Completion(
+        text=long_draft, model=kw["model"], provider="fake"))
     monkeypatch.setattr(g, "check_relevance", lambda post, comment: True)
     monkeypatch.setattr(g, "_log_api_usage", lambda *a, **k: None)
 
@@ -587,12 +576,11 @@ def test_a_self_positioning_x_draft_is_regenerated(make_generator, monkeypatch):
                    "i found the same thing",
                    "batching, always batching"])
 
-    def fake_create(**kw):
-        text = next(drafts)
-        return type("R", (), {"choices": [type("C", (), {
-            "message": type("M", (), {"content": text})()})()]})()
+    def fake_complete(**kw):
+        return providers.Completion(text=next(drafts), model=kw["model"],
+                                    provider="fake")
 
-    monkeypatch.setattr(g.client.chat.completions, "create", fake_create)
+    monkeypatch.setattr(g.provider, "complete", fake_complete)
     monkeypatch.setattr(g, "check_relevance", lambda post, comment: True)
     monkeypatch.setattr(g, "_log_api_usage", lambda *a, **k: None)
 

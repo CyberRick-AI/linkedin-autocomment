@@ -503,6 +503,64 @@ header {
   margin-bottom: 1.5rem;
 }
 
+/* ─── Toasts and in-page confirmation ──────────────────────────────────────
+   Replaces alert() and confirm(). Embedded browsers suppress native dialogs
+   and return false to the page, which turned every guard into a silent
+   no-op and made every error message invisible. That includes the macOS
+   app's WKWebView, which runs no JavaScript dialogs at all. Used by the
+   Settings tab (the one control here that spends money is behind an
+   askConfirm). The other tabs' alert()/confirm() calls are unchanged. */
+
+#toastWrap {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2.5rem));
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim);
+  border-radius: 8px;
+  padding: 0.75rem 2.25rem 0.75rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  animation: modalIn 0.15s ease;
+  position: relative;
+  white-space: pre-wrap;
+}
+
+.toast.error { border-left-color: var(--red); }
+.toast.success { border-left-color: var(--green); }
+.toast.warn { border-left-color: var(--yellow); }
+
+.toast .toast-close {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.toast .toast-close:hover { color: var(--text); }
+
+#confirmModal .modal p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin-bottom: 1.5rem;
+}
+
 .form-group { margin-bottom: 1.25rem; }
 
 .form-group label {
@@ -1010,6 +1068,7 @@ header {
     <button class="mode-tab" data-mode="poster" onclick="switchMode('poster')">Post Creator</button>
     <button class="mode-tab" data-mode="scheduler" onclick="switchMode('scheduler')">Engagement Scheduler</button>
     <button class="mode-tab" data-mode="scheduled" onclick="switchMode('scheduled')">Scheduled Posting</button>
+    <button class="mode-tab" data-mode="settings" onclick="switchMode('settings')">Settings</button>
   </nav>
 
   <!-- Active Jobs Bar -->
@@ -1157,12 +1216,8 @@ header {
     <div class="settings-row">
       <div class="form-group">
         <label>Model</label>
-        <select id="commentModel">
-          <option value="gpt-4o-mini">gpt-4o-mini (fast/cheap)</option>
-          <option value="gpt-4o">gpt-4o</option>
-          <option value="gpt-4">gpt-4</option>
-          <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-        </select>
+        <div class="trash-reason" id="commentModelInfo">Loading…</div>
+          <div class="trash-reason" style="margin-top:0.4rem">Set in <strong>Settings</strong>. The model follows the provider you chose there.</div>
       </div>
       <div class="form-group">
         <label>Max Comments</label>
@@ -1349,10 +1404,8 @@ header {
           </div>
           <div class="form-group">
             <label>Model</label>
-            <select id="posterModel">
-              <option value="gpt-4o" selected>gpt-4o</option>
-              <option value="gpt-4o-mini">gpt-4o-mini</option>
-            </select>
+            <div class="trash-reason" id="posterModelInfo">Loading…</div>
+          <div class="trash-reason" style="margin-top:0.4rem">Set in <strong>Settings</strong>. The model follows the provider you chose there.</div>
           </div>
         </div>
         <button class="btn btn-primary" id="generatePostBtn" onclick="generatePosts()">
@@ -1369,10 +1422,8 @@ header {
         </div>
         <div class="form-group" style="margin-bottom:0.75rem">
           <label>Model</label>
-          <select id="articleModel">
-            <option value="gpt-4o" selected>gpt-4o</option>
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-          </select>
+          <div class="trash-reason" id="articleModelInfo">Loading…</div>
+          <div class="trash-reason" style="margin-top:0.4rem">Set in <strong>Settings</strong>. The model follows the provider you chose there.</div>
         </div>
         <button class="btn btn-primary" id="articleBtn" onclick="generateArticlePost()">
           Generate from Article
@@ -1665,6 +1716,101 @@ header {
 
   </div><!-- end mode-scheduled -->
 
+  <!-- ═══ SETTINGS MODE ════════════════════════════════ -->
+  <div class="mode-panel" id="mode-settings">
+
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Settings</div>
+        <div class="panel-subtitle">Choose which AI provider generates your comments and posts, and store its API key in your operating system's credential store.</div>
+      </div>
+    </div>
+
+    <!-- Provider for the selected profile -->
+    <div class="poster-section" style="margin-bottom:1rem">
+      <h3>Generation Provider</h3>
+      <div class="trash-reason" style="margin-bottom:1rem">
+        Applies to the profile selected at the top of the page. Takes effect on
+        the next generation run. Changing this does not touch your persona,
+        tone, or voice.
+      </div>
+
+      <div class="form-group">
+        <label>Provider</label>
+        <select id="setProvider" onchange="onProviderPicked()"
+                style="width:100%;background:var(--surface-2);border:1px solid var(--border);color:var(--text);font-family:var(--sans);font-size:0.9rem;padding:0.65rem;border-radius:6px">
+        </select>
+      </div>
+
+      <div class="form-group" id="setBaseUrlGroup" style="display:none">
+        <label>Base URL</label>
+        <input type="text" id="setBaseUrl" placeholder="https://your-endpoint.example/v1">
+        <div class="trash-reason" style="margin-top:0.4rem">
+          Any OpenAI-compatible endpoint. This is how you use a provider that is
+          not in the list above, including one running on your own machine.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Model</label>
+        <input type="text" id="setModel" placeholder="leave blank for the provider default">
+        <div class="trash-reason" id="setModelHint" style="margin-top:0.4rem"></div>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveProvider()">Save Provider</button>
+      <button class="btn" onclick="testConnection()">Test Connection</button>
+      <span id="setProviderStatus" class="trash-reason" style="margin-left:0.75rem"></span>
+      <div class="trash-reason" style="margin-top:0.75rem">
+        Test Connection sends one small prompt to check the endpoint, the model
+        name, and whether this model keeps your comments varied. It is the only
+        button here that spends money, at most two calls, logged to
+        <code>api_usage.jsonl</code>.
+      </div>
+      <div id="setProbeReport" style="margin-top:0.75rem"></div>
+    </div>
+
+    <!-- API keys -->
+    <div class="poster-section">
+      <h3>API Keys</h3>
+      <div class="trash-reason" style="margin-bottom:1rem">
+        Keys are stored in your operating system's credential store (Keychain on
+        macOS, Credential Manager on Windows), never in a file in this project.
+        Once saved, a key can never be read back here: you will only ever see
+        its last four characters. To replace one, paste a new key over it.
+        <br><br>
+        The list below is <strong>status only</strong>, not a chooser. A key is
+        saved against whichever provider is picked in the dropdown above, and
+        the field at the bottom names it.
+      </div>
+
+      <div id="setKeyList"></div>
+
+      <div class="form-group" style="margin-top:1.25rem">
+        <label id="setApiKeyLabel">Paste a key for the selected provider</label>
+        <input type="password" id="setApiKey" placeholder="paste key, then Save Key" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
+      <span id="setKeyStatus" class="trash-reason" style="margin-left:0.75rem"></span>
+    </div>
+
+  </div><!-- end mode-settings -->
+
+</div>
+
+<!-- Toasts and in-page confirmation. See ROADMAP Phase 5b: native dialogs are
+     suppressed in embedded browsers, so alert() showed nothing and confirm()
+     returned false without ever asking. -->
+<div id="toastWrap" aria-live="polite" role="status"></div>
+
+<div class="modal-backdrop" id="confirmModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <h2 id="confirmTitle">Confirm</h2>
+    <p id="confirmMessage"></p>
+    <div class="btn-group" style="justify-content:flex-end">
+      <button class="btn" id="confirmCancel">Cancel</button>
+      <button class="btn btn-primary" id="confirmOk">Confirm</button>
+    </div>
+  </div>
 </div>
 
 <!-- ─── Add Profile Modal ─────────────────────────────── -->
@@ -1791,6 +1937,12 @@ function switchProfile() {
   loadExistingPosts();
   loadExistingComments();
   loadLifecycle();
+  // The Generate panels name the provider and model that will actually run,
+  // and that is per profile.
+  refreshActiveModels();
+  if (document.getElementById('mode-settings').classList.contains('active')) {
+    loadSettings();
+  }
 }
 
 // Read the store's NEW bin. Always assigns — an empty result must be able to
@@ -2226,8 +2378,9 @@ async function startGenerate() {
   const noLimit = document.getElementById('commentNoLimit').checked;
   // No input_file: generation ALWAYS runs on the store's NEW bin. Sending a
   // curated file here is what bypassed the store-driven path for three weeks.
+  // No model: the profile's provider (Settings tab) decides it. Sending one
+  // overrode Settings on every run.
   const body = {
-    model: document.getElementById('commentModel').value,
     limit: noLimit ? null : parseInt(document.getElementById('commentLimit').value)
   };
 
@@ -2808,6 +2961,300 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeModal(); closeConfigModal(); }
 });
 
+// ─── Which provider and model will actually run ─────────
+//
+// The Generate panels used to carry their own model dropdown, listing OpenAI
+// models only. It won: the dashboard always sent a model, and the generator
+// treats an explicit --model as an override of the profile config. So a
+// profile configured for xAI would call xAI's endpoint asking for
+// gpt-4o-mini, and fail with a vendor error that looked like xAI being
+// broken. There is now one place to choose a provider, and these panels
+// report what that choice is rather than competing with it.
+
+async function renderActiveModel(elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (!currentProfile) { el.textContent = 'Select a profile first.'; return; }
+  try {
+    const p = await (await fetch(`/api/profiles/${currentProfile}/provider`)).json();
+    const keySet = p.local || (p.key && p.key.set);
+    el.innerHTML =
+      `Using <strong>${esc(p.label || p.provider)}</strong> · <code>${esc(p.model || '(provider default)')}</code>` +
+      (keySet ? '' :
+        ` <span style="color:var(--red)">— no API key set for ${esc(p.provider)}, ` +
+        `generation will fail</span>`);
+  } catch (e) {
+    el.textContent = 'Could not read the provider setting: ' + e.message;
+  }
+}
+
+function refreshActiveModels() {
+  ['commentModelInfo', 'posterModelInfo', 'articleModelInfo'].forEach(renderActiveModel);
+}
+
+// ─── Toasts and in-page confirmation ────────────────────
+// alert() and confirm() do nothing in an embedded browser (the macOS app's
+// WKWebView included): confirm() returns false without asking, so a guard
+// becomes a dead button. The Settings tab uses these instead.
+
+function showToast(message, kind) {
+  const wrap = document.getElementById('toastWrap');
+  if (!wrap) return;                       // never let a message break a flow
+  const toast = document.createElement('div');
+  toast.className = 'toast' + (kind ? ' ' + kind : '');
+  toast.textContent = String(message);
+
+  const close = document.createElement('button');
+  close.className = 'toast-close';
+  close.textContent = '×';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.onclick = () => toast.remove();
+  toast.appendChild(close);
+
+  wrap.appendChild(toast);
+  // Long enough to read a sentence, and dismissible before that. Errors linger.
+  setTimeout(() => toast.remove(), kind === 'error' ? 12000 : 7000);
+}
+
+// Returns a Promise that resolves true only on an explicit Confirm. Every
+// other exit — Cancel, Escape, backdrop click — resolves false, so a guard
+// still guards when the user does not answer.
+function askConfirm(message, confirmLabel) {
+  const backdrop = document.getElementById('confirmModal');
+  const okBtn = document.getElementById('confirmOk');
+  const cancelBtn = document.getElementById('confirmCancel');
+  document.getElementById('confirmMessage').textContent = String(message);
+  okBtn.textContent = confirmLabel || 'Confirm';
+  backdrop.classList.add('active');
+  okBtn.focus();
+
+  return new Promise(resolve => {
+    const settle = (answer) => {
+      backdrop.classList.remove('active');
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      backdrop.onclick = null;
+      document.removeEventListener('keydown', onKey);
+      resolve(answer);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') settle(false);
+      if (e.key === 'Enter') settle(true);
+    };
+    okBtn.onclick = () => settle(true);
+    cancelBtn.onclick = () => settle(false);
+    backdrop.onclick = (e) => { if (e.target === backdrop) settle(false); };
+    document.addEventListener('keydown', onKey);
+  });
+}
+
+// ─── Settings: provider + API keys ──────────────────────
+// The API key is write-only in this UI by design. Nothing here ever holds a
+// whole key: the server returns only a "set / source / last4" summary, and the
+// input field is cleared the moment a key is saved.
+
+let SETTINGS_PROVIDERS = [];
+
+// Rendered on its own so it can follow the dropdown. Called at load AND from
+// onProviderPicked: at load the dropdown still holds the first option, not the
+// profile's provider, so a list keyed on "selected" showed the wrong row. Same
+// ordering trap Phase 8 hit with the model hint.
+function renderKeyList() {
+  // Only the providers that are actually configured, plus whichever one is
+  // selected. Eleven rows, ten of them reading "not set", spent a lot of screen
+  // to convey two facts and read as a chooser — which it is not; the dropdown
+  // above is the chooser. The rest are one click away.
+  const selected = document.getElementById('setProvider').value;
+  const isConfigured = (p) => p.local || (p.key && p.key.set);
+  const shown = SETTINGS_PROVIDERS.filter(p => isConfigured(p) || p.name === selected);
+  const hidden = SETTINGS_PROVIDERS.filter(p => !shown.includes(p));
+
+  document.getElementById('setKeyList').innerHTML =
+    shown.map(keyRow).join('') +
+    (hidden.length ? `
+      <details style="margin-top:0.6rem">
+        <summary style="cursor:pointer;font-family:var(--mono);font-size:0.75rem;
+                        color:var(--text-dim)">
+          ${hidden.length} other provider${hidden.length === 1 ? '' : 's'} with no key
+        </summary>
+        <div style="margin-top:0.4rem">${hidden.map(keyRow).join('')}</div>
+      </details>` : '');
+
+  function keyRow(p) {
+    const k = p.key || {};
+    let label;
+    if (p.local) {
+      label = '<span style="color:var(--green)">no key needed</span> · runs locally';
+    } else if (k.set) {
+      label = `<span style="color:var(--green)">set</span> · …${k.last4} · from ${k.source}`;
+    } else {
+      label = `<span style="color:var(--text-muted)">not set</span> · or export ${p.env_var}`;
+    }
+    const clear = k.set && k.source === 'keyring'
+      ? `<button class="btn" onclick="clearApiKey('${p.name}')">Forget</button>` : '';
+    const mark = p.name === selected
+      ? ' <span class="trash-reason">← selected</span>' : '';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;
+                        padding:0.5rem 0;border-bottom:1px solid var(--border)">
+              <div><strong>${p.label}</strong>${mark}<div class="trash-reason">${label}</div></div>
+              <div>${clear}</div>
+            </div>`;
+  }
+
+}
+
+async function loadSettings() {
+  const catalogue = await fetch('/api/settings/providers').then(r => r.json());
+  SETTINGS_PROVIDERS = catalogue.providers || [];
+
+  const select = document.getElementById('setProvider');
+  select.innerHTML = SETTINGS_PROVIDERS
+    .map(p => `<option value="${p.name}">${p.label}</option>`).join('');
+
+  renderKeyList();
+
+  if (!catalogue.credential_store_available) {
+    document.getElementById('setKeyStatus').textContent =
+      'No OS credential store available — use the environment variables instead.';
+  }
+
+  // Show the default-model hint from the catalogue alone, before we know which
+  // profile is selected. Without this the hint stays blank whenever there is no
+  // profile yet, which is exactly when a new user is first reading this screen.
+  onProviderPicked();
+
+  if (!currentProfile) return;
+  const current = await fetch(`/api/profiles/${currentProfile}/provider`).then(r => r.json());
+  if (current.error) {
+    document.getElementById('setProviderStatus').textContent = current.error;
+    return;
+  }
+  select.value = current.provider;
+  document.getElementById('setModel').value = current.model || '';
+  document.getElementById('setBaseUrl').value = current.base_url || '';
+  onProviderPicked();
+}
+
+function onProviderPicked() {
+  const name = document.getElementById('setProvider').value;
+  const p = SETTINGS_PROVIDERS.find(x => x.name === name);
+
+  // The base URL field only appears for providers that need one, so the common
+  // case stays a two field form.
+  document.getElementById('setBaseUrlGroup').style.display =
+    (p && p.requires_base_url) ? '' : 'none';
+
+  let hint = '';
+  if (p && p.default_model) {
+    hint = `Default: ${p.default_model}`;
+    if (!p.default_model_verified) {
+      hint += ' — unverified, confirm it with Test Connection';
+    }
+  } else if (p) {
+    hint = 'This provider has no default. Enter the exact model name it serves.';
+  }
+  document.getElementById('setModelHint').textContent = hint;
+  document.getElementById('setProbeReport').innerHTML = '';
+
+  // Name the provider the key will be saved against, rather than saying "the
+  // selected provider" and pointing at nothing. The status rows above read as
+  // selectable and are not, so a key pasted while this dropdown still said
+  // OpenAI would be stored as the OpenAI key. Observed 2026-08-01.
+  const keyLabel = document.getElementById('setApiKeyLabel');
+  if (keyLabel) keyLabel.textContent = `Paste a key for ${(p && p.label) || name}`;
+  // The visible key rows follow the selection too, so the list always shows the
+  // provider you are about to save a key against.
+  if (SETTINGS_PROVIDERS.length) renderKeyList();
+
+  const keyField = document.getElementById('setApiKey');
+  if (keyField) {
+    keyField.placeholder = (p && p.local)
+      ? 'no key needed — this provider runs locally'
+      : `paste the ${(p && p.label) || name} key, then Save Key`;
+    keyField.disabled = !!(p && p.local);
+  }
+}
+
+async function saveProvider() {
+  if (!currentProfile) { showToast('Pick a profile first', 'error'); return; }
+  const body = {
+    provider: document.getElementById('setProvider').value,
+    model: document.getElementById('setModel').value.trim(),
+    base_url: document.getElementById('setBaseUrl').value.trim(),
+  };
+  const resp = await fetch(`/api/profiles/${currentProfile}/provider`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  document.getElementById('setProviderStatus').textContent =
+    resp.ok ? `Saved: ${data.provider} / ${data.model}` : (data.error || 'Failed');
+  if (resp.ok) document.getElementById('setModel').value = data.model;
+}
+
+async function saveApiKey() {
+  const field = document.getElementById('setApiKey');
+  const provider = document.getElementById('setProvider').value;
+  if (!field.value.trim()) { showToast('Paste a key first', 'error'); return; }
+
+  const resp = await fetch('/api/settings/api-key', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider: provider, api_key: field.value}),
+  });
+  const data = await resp.json();
+  // Clear the field either way, so a rejected key is not left sitting in the DOM.
+  field.value = '';
+  document.getElementById('setKeyStatus').textContent =
+    resp.ok ? `Saved for ${provider} (…${data.key.last4})` : (data.error || 'Failed');
+  if (resp.ok) loadSettings();
+}
+
+async function testConnection() {
+  const provider = document.getElementById('setProvider').value;
+  const report = document.getElementById('setProbeReport');
+  if (!await askConfirm(
+      `Send one small test prompt to ${provider}?\n\n` +
+      'This makes a real API call and costs a fraction of a cent.')) return;
+
+  report.innerHTML = '<span class="trash-reason">Testing…</span>';
+  const resp = await fetch('/api/settings/test-connection', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      provider: provider,
+      model: document.getElementById('setModel').value.trim(),
+      base_url: document.getElementById('setBaseUrl').value.trim(),
+    }),
+  });
+  const r = await resp.json();
+
+  const rows = [];
+  rows.push(r.ok
+    ? `<div style="color:var(--green)">Connected. ${r.calls} call(s).</div>`
+    : `<div style="color:var(--red)">Failed after ${r.calls || 0} call(s).</div>`);
+  if (r.error) rows.push(`<div class="trash-reason">${esc(r.error)}</div>`);
+  if (r.ok) {
+    rows.push(`<div class="trash-reason">Model: ${esc(r.model)}</div>`);
+    rows.push(r.temperature_accepted
+      ? '<div class="trash-reason">Temperature accepted, so comment variety works normally.</div>'
+      : '<div style="color:var(--yellow)">Temperature not accepted. Comments will be less varied on this model.</div>');
+    if (r.reasoning_stripped) {
+      rows.push('<div style="color:var(--yellow)">This model emits reasoning text. It is being filtered out, but check a few comments before trusting it.</div>');
+    }
+    if (r.text) rows.push(`<div class="trash-reason">Replied: ${esc(r.text)}</div>`);
+  }
+  report.innerHTML = rows.join('');
+}
+
+async function clearApiKey(provider) {
+  if (!await askConfirm(`Forget the stored ${provider} API key?`)) return;
+  await fetch(`/api/settings/api-key/${provider}`, {method: 'DELETE'});
+  document.getElementById('setKeyStatus').textContent = `Cleared ${provider}`;
+  loadSettings();
+}
+
 // ─── Mode Switching ─────────────────────────────────────
 
 function switchMode(mode) {
@@ -2817,6 +3264,8 @@ function switchMode(mode) {
   document.querySelectorAll('.mode-panel').forEach(p => {
     p.classList.toggle('active', p.id === 'mode-' + mode);
   });
+
+  refreshActiveModels();
 
   if (mode === 'connector') {
     loadConnectorStats();
@@ -2831,6 +3280,9 @@ function switchMode(mode) {
   if (mode === 'scheduled') {
     loadScheduledQueue();
     loadDrain(true);
+  }
+  if (mode === 'settings') {
+    loadSettings();
   }
 }
 
@@ -3989,8 +4441,8 @@ async function generatePosts() {
     {
       count: parseInt(document.getElementById('posterCount').value) || 1,
       style: document.getElementById('posterStyle').value || null,
-      topic: document.getElementById('posterTopic').value.trim() || null,
-      model: document.getElementById('posterModel').value
+      topic: document.getElementById('posterTopic').value.trim() || null
+      // No model: the profile's provider (Settings tab) decides it.
     },
     document.getElementById('generatePostBtn'),
     'Generate Posts',
@@ -4007,7 +4459,7 @@ async function generateArticlePost() {
 
   await launchJob(
     `/api/poster/${currentProfile}/article`,
-    { url, model: document.getElementById('articleModel').value },
+    { url },
     document.getElementById('articleBtn'),
     'Generate from Article',
     document.getElementById('posterLog'),
