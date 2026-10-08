@@ -64,6 +64,76 @@ def wants_dock_icon():
     return os.environ.get(DOCK_ICON_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}
 
 
+def ask_with_alert(kind, message, default=None):
+    """Show a JavaScript dialog as a native ``NSAlert`` and return the answer.
+
+    ``alert`` returns None, ``confirm`` True/False, ``prompt`` the typed text
+    or None on Cancel — exactly what the page's own call would have returned.
+    """
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setMessageText_("LinkedIn Autocomment")
+    alert.setInformativeText_(message or "")
+    alert.addButtonWithTitle_("OK")
+    if kind in ("confirm", "prompt"):
+        alert.addButtonWithTitle_("Cancel")
+    field = None
+    if kind == "prompt":
+        field = AppKit.NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 24))
+        field.setStringValue_(default or "")
+        alert.setAccessoryView_(field)
+        alert.window().setInitialFirstResponder_(field)
+    ok = alert.runModal() == AppKit.NSAlertFirstButtonReturn
+    if kind == "confirm":
+        return ok
+    if kind == "prompt":
+        return str(field.stringValue()) if ok else None
+    return None
+
+
+class WebUIDelegate(NSObject):
+    """Answers the page's ``alert()``, ``confirm()`` and ``prompt()``.
+
+    WKWebView is not a browser: with no ``WKUIDelegate`` it drops every
+    ``alert()`` and answers every ``confirm()`` with false. The dashboard
+    guards its destructive buttons with ``confirm()`` and reports most errors
+    with ``alert()``, so without this those buttons did nothing in the app
+    while the same page worked in a browser.
+
+    ``ask`` is injectable so the tests never open a real modal.
+    """
+
+    def initWithAsk_(self, ask):
+        self = objc.super(WebUIDelegate, self).init()
+        if self is None:
+            return None
+        self._ask = ask
+        return self
+
+    @objc.python_method
+    def _answer(self, kind, message, default, fallback):
+        # The completion handler MUST be called exactly once, whatever
+        # happens: WebKit holds the page's JavaScript until it is, so a
+        # dialog that raises would otherwise freeze the dashboard for good.
+        try:
+            return self._ask(kind, message, default)
+        except Exception:
+            logger.exception("Showing a %s dialog failed", kind)
+            return fallback
+
+    def webView_runJavaScriptAlertPanelWithMessage_initiatedByFrame_completionHandler_(
+            self, webview, message, frame, handler):
+        self._answer("alert", message, None, None)
+        handler()
+
+    def webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+            self, webview, message, frame, handler):
+        handler(bool(self._answer("confirm", message, None, False)))
+
+    def webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(
+            self, webview, prompt, default, frame, handler):
+        handler(self._answer("prompt", prompt, default, None))
+
+
 class DashboardWindow:
     """An ``NSWindow`` holding a ``WKWebView``, with the interface the
     controller expects: ``show`` / ``hide`` / ``is_visible`` / ``load``.
@@ -92,6 +162,12 @@ class DashboardWindow:
         self.webview.setAutoresizingMask_(
             AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
         self.window.setContentView_(self.webview)
+
+        # Without a UI delegate WKWebView silently drops alert() and answers
+        # every confirm() with false. Held on self: WebKit keeps only a weak
+        # reference to its delegate.
+        self._ui_delegate = WebUIDelegate.alloc().initWithAsk_(ask_with_alert)
+        self.webview.setUIDelegate_(self._ui_delegate)
 
         self._loaded = None
 
