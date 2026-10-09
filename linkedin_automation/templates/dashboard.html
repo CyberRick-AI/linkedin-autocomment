@@ -4506,17 +4506,18 @@ let homeQueueData = null;
 
 async function homeLoadSlots() {
   const prof = currentProfile;
-  if (homeSlots.profile === prof && (Date.now() - homeSlots.at) < 600000) {
+  if (homeSlots.profile === prof && (Date.now() - homeSlots.at) < 60000) {
     homePaintQueue();
     return;
   }
   try {
-    const res = await fetch('/api/drain/' + encodeURIComponent(prof) + '/status?slots=1');
+    const res = await fetch('/api/scheduled/' + encodeURIComponent(prof) + '/slots');
     const d = await res.json();
     if (prof !== currentProfile) return;
-    homeSlots = { profile: prof, at: Date.now(), slots: (res.ok && d.slots) || null };
+    homeSlots = { profile: prof, at: Date.now(), slots: (res.ok && d.slots) || null,
+                  reason: (d && d.reason) || 'Could not reach Buffer just now' };
   } catch (e) {
-    homeSlots = { profile: prof, at: Date.now(), slots: null };
+    homeSlots = { profile: prof, at: Date.now(), slots: null, reason: 'Could not reach Buffer just now' };
   }
   homePaintQueue();
 }
@@ -4555,7 +4556,7 @@ function homePaintQueue() {
     arc.setAttribute('stroke-dasharray', '0 ' + circumference.toFixed(1));
     arc.style.visibility = 'hidden';
     bits.push(perPlat);
-    bits.push('Buffer limit unknown until the drain is on');
+    bits.push(homeSlots.reason || 'Buffer limit unknown');
   }
   if (held) bits.push(held + ' held for a free slot');
   cap.textContent = bits.join(' · ');

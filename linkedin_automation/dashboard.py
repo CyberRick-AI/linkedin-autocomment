@@ -2028,6 +2028,32 @@ def _scheduled_channel_id(profile_name, platform=pm.SCHEDULED_DEFAULT_PLATFORM):
     return pm.resolve_scheduled(profile_name, platform)["channel_id"]
 
 
+@app.route('/api/scheduled/<profile_name>/slots', methods=['GET'])
+def scheduled_slots_route(profile_name):
+    """GET - Buffer's live scheduled-post count, for the Home queue ring.
+
+    Read-only, one Buffer round trip (cached by buffer_client). The limit is
+    organisation-wide, so any configured channel answers for all of them:
+    LinkedIn's first, then X's. Never raises - no channel or a Buffer failure
+    comes back as ``slots: null`` with a reason the ring can show.
+    """
+    for platform in (pm.SCHEDULED_DEFAULT_PLATFORM, "x"):
+        channel_id = _scheduled_channel_id(profile_name, platform)
+        if not channel_id:
+            continue
+        try:
+            key = pm.resolve_scheduled(profile_name, platform).get("api_key")
+            slots = buffer_client.scheduled_slots(channel_id, key=key)
+        except Exception as exc:
+            logger.debug("slot read failed for %s/%s: %s",
+                         profile_name, platform, exc)
+            return jsonify({"slots": None, "platform": platform,
+                            "reason": "Could not reach Buffer just now"})
+        return jsonify({"slots": slots, "platform": platform, "reason": None})
+    return jsonify({"slots": None, "platform": None,
+                    "reason": "No Buffer channel configured"})
+
+
 @app.route('/api/scheduled/<profile_name>/schedule/preflight', methods=['GET'])
 def scheduled_preflight(profile_name):
     """GET - everything the confirmation dialog needs, before anything fires.
