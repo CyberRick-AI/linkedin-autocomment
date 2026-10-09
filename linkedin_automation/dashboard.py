@@ -1570,6 +1570,25 @@ _SCHEDULED_STATE_HELP = {
     },
 }
 
+# X has no first-comment step - the link rides in the post body - so on X a
+# published post is finished. Only the states whose wording mentions the
+# comment pass differ; everything else reads the same on both platforms.
+_X_STATE_HELP = {
+    csv_pipeline.PUBLISHED: {
+        "label": "Published",
+        "meaning": "live on X, link included in the post",
+        "action": "",
+    },
+}
+
+
+def _state_help(status, platform=None):
+    """The help for ``status`` in ``platform``'s own terms."""
+    if (platform or "").lower() == "x" and status in _X_STATE_HELP:
+        return _X_STATE_HELP[status]
+    return _SCHEDULED_STATE_HELP.get(status, {})
+
+
 # Display order: PROBLEMS, then work to do, then finished.
 #
 # PENDING heads the work-to-do band - it is the queue you are about to act on.
@@ -1648,10 +1667,10 @@ def _scheduled_image_view(rec):
     return view
 
 
-def _scheduled_row_view(key, rec):
+def _scheduled_row_view(key, rec, platform=None):
     """Trim a pipeline state row to what the queue table needs."""
     status = rec.get("status") or csv_pipeline.PENDING
-    help_ = _SCHEDULED_STATE_HELP.get(status, {})
+    help_ = _state_help(status, platform)
     # "failed before publishing - nothing exists" is the right thing to say
     # about almost every FAILED row, and exactly the wrong thing to say about
     # one whose Buffer request was in flight when it died. That row invites a
@@ -1875,7 +1894,7 @@ def scheduled_queue(profile_name):
 
     state = csv_pipeline.PipelineState(profile_name=profile_name,
                                        platform=platform)
-    rows = [_scheduled_row_view(k, v) for k, v in state.rows.items()]
+    rows = [_scheduled_row_view(k, v, platform) for k, v in state.rows.items()]
 
     counts = {s: 0 for s in _SCHEDULED_STATE_ORDER}
     grouped = {s: [] for s in _SCHEDULED_STATE_ORDER}
@@ -1915,7 +1934,7 @@ def scheduled_queue(profile_name):
         # "comment_failed 0" instead of "Comment failed 0".
         "labels": {s: _SCHEDULED_STATE_HELP.get(s, {}).get("label", s)
                    for s in _SCHEDULED_STATE_ORDER},
-        "meanings": {s: _SCHEDULED_STATE_HELP.get(s, {}).get("meaning", "")
+        "meanings": {s: _state_help(s, platform).get("meaning", "")
                      for s in _SCHEDULED_STATE_ORDER},
         "posts": grouped,
         "total": len(rows),

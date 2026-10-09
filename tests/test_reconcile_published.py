@@ -411,3 +411,25 @@ def test_the_send_paths_in_the_dashboard_ask_for_a_fresh_count():
         # argument list.
         call = body.index("scheduled_slots(channel_id,")
         assert "max_age=0" in body[call:call + 200], fn
+
+
+def test_a_published_x_post_owes_nothing():
+    """X carries its link in the body - no comment pass, so nothing is owed.
+
+    The LinkedIn wording ("first comment still owed", "the comment sweep will
+    pick it up") on an X row told the operator to wait for a step that never
+    runs for X.
+    """
+    rec = {"status": cp.PUBLISHED, "text": "x"}
+    x = dashboard._scheduled_row_view("k", rec, platform="x")
+    li = dashboard._scheduled_row_view("k", rec, platform="linkedin")
+    assert "LinkedIn" not in x["meaning"] and "owed" not in x["meaning"]
+    assert "live on X" in x["meaning"]
+    assert not x["action"]
+    assert "live on LinkedIn" in li["meaning"]
+    assert dashboard._scheduled_row_view("k", rec)["meaning"] == li["meaning"]
+
+
+def test_the_x_queue_legend_does_not_promise_a_comment():
+    assert "live on X" in dashboard._state_help(cp.PUBLISHED, "x")["meaning"]
+    assert "live on LinkedIn" in dashboard._state_help(cp.PUBLISHED, "linkedin")["meaning"]
