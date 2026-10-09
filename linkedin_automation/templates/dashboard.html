@@ -3,35 +3,68 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LinkedIn Autopilot</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<title>Guild Autopilot</title>
+<meta name="color-scheme" content="dark">
+<link rel="icon" type="image/png" sizes="128x128" href="/static/AIBuildersGuild-Shield-transparent-128.png">
+<link rel="apple-touch-icon" href="/static/AIBuildersGuild-Shield-transparent-512.png">
+<!-- Forge Aurora type. Every family has a system fallback in the variables
+     below, so the page still reads right offline (the macOS app included). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ─── Forge Aurora tokens ─────────────────────────────────
+   Deep navy ground, frosted-glass surfaces, gold accent. Every older rule
+   below reads these variables, so redefining them here is most of the
+   reskin; the "Forge Aurora components" block at the end of this sheet
+   restyles what a variable alone could not reach. */
 :root {
-  --bg: #0a0a0a;
-  --surface: #111111;
-  --surface-2: #1a1a1a;
-  --surface-3: #222222;
-  --border: #2a2a2a;
-  --border-light: #333333;
-  --text: #e8e8e8;
-  --text-dim: #888888;
-  --text-muted: #555555;
-  --accent: #ffffff;
-  --green: #22c55e;
-  --green-dim: #16a34a;
-  --red: #ef4444;
-  --red-dim: #dc2626;
-  --yellow: #eab308;
-  --mono: 'IBM Plex Mono', monospace;
-  --sans: 'Outfit', sans-serif;
+  --bg: #070d1c;
+  --surface: rgba(14, 26, 54, 0.62);
+  --surface-2: rgba(24, 40, 78, 0.66);
+  --surface-3: rgba(36, 56, 100, 0.72);
+  --panel: rgba(4, 9, 22, 0.45);
+  --border: rgba(232, 200, 119, 0.18);
+  --border-light: rgba(232, 200, 119, 0.34);
+  --line: rgba(201, 214, 238, 0.22);
+  --text: #eaf2ff;
+  --text-dim: #b4c3dd;
+  --text-muted: #8fa1bf;
+  --accent: #e8c877;
+  --accent-hi: #f6dd9c;
+  --gold-top: #f0d48a;
+  --gold-bottom: #b8892c;
+  --on-gold: #1a1205;
+  --info: #3db8ff;
+  --violet: #c3b6ff;
+  --li-bg: rgba(10, 102, 194, 0.30);
+  --li-line: rgba(124, 192, 255, 0.45);
+  --li-text: #b9dcff;
+  --x-bg: rgba(255, 255, 255, 0.10);
+  --x-line: rgba(255, 255, 255, 0.28);
+  --x-text: #f2f4f8;
+  --green: #5dd39e;
+  --green-dim: #2f9e6c;
+  --red: #ff8080;
+  --red-dim: #c94a4a;
+  --yellow: #f0c674;
+  --glass-blur: blur(20px);
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --serif: 'Cinzel', 'Trajan Pro', Optima, 'Palatino Linotype', Georgia, serif;
 }
 
 html { font-size: 14px; }
 
 body {
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(900px 480px at 88% -8%, rgba(46, 104, 190, 0.55), rgba(7, 13, 28, 0) 62%),
+    radial-gradient(700px 420px at 6% 18%, rgba(110, 80, 200, 0.28), rgba(7, 13, 28, 0) 60%),
+    radial-gradient(800px 460px at 30% 112%, rgba(176, 128, 40, 0.30), rgba(7, 13, 28, 0) 58%);
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
   line-height: 1.6;
@@ -39,66 +72,139 @@ body {
   overflow-x: hidden;
 }
 
+a { color: var(--accent); }
+a:hover { color: var(--accent-hi); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ─── Layout ──────────────────────────────────────────── */
 
 .app {
-  max-width: 1100px;
+  max-width: 1360px;
   margin: 0 auto;
-  padding: 2rem 2rem 6rem;
+  padding: 24px clamp(16px, 3vw, 40px) 6rem;
 }
 
-header {
+/* The top bar. The header element stays bare (no attributes): tests locate
+   the Log in and Restart buttons by splitting on that exact tag. */
+.app > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 20px;
+  border-radius: 18px;
+  background: rgba(12, 22, 46, 0.62);
+  border: 1px solid rgba(232, 200, 119, 0.20);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+.brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 1.5rem 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 2rem;
+  gap: 10px;
+  padding: 0 8px 0 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 12px;
+  min-height: 44px;
 }
-
-.logo {
-  font-family: var(--mono);
-  font-size: 1rem;
-  font-weight: 600;
+.brand img { width: 44px; height: 44px; object-fit: contain; flex: none; }
+.brand-text {
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 16px;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
+  line-height: 1.05;
   color: var(--accent);
 }
 
-.logo span { color: var(--text-muted); font-weight: 300; }
+.top-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+.top-nav-item {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 0;
+  background: transparent;
+  color: #c9d6ee;
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.top-nav-item:hover { background: rgba(232, 200, 119, 0.10); color: var(--text); }
+.top-nav-item.active { background: var(--accent); color: #170f02; }
+
+.cmdk-open {
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(4, 9, 22, 0.55);
+  color: #9fb0cc;
+  font-family: var(--sans);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.cmdk-open:hover { border-color: var(--border-light); color: var(--text); }
+.cmdk-open span.cmdk-open-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+kbd, .kbd {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(201, 214, 238, 0.28);
+  color: #c9d6ee;
+  background: transparent;
+}
 
 /* ─── Profile Bar ─────────────────────────────────────── */
 
 .profile-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: 6px;
 }
 
 .profile-select {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  min-height: 44px;
+  background: transparent;
+  border: 1px solid var(--line);
   color: var(--text);
-  font-family: var(--mono);
-  font-size: 0.85rem;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
+  font-family: var(--sans);
+  font-size: 14px;
+  padding: 0 14px;
+  border-radius: 12px;
   cursor: pointer;
   outline: none;
   transition: border-color 0.2s;
 }
 
+.profile-select option { background: #0e1a36; color: var(--text); }
+
 .profile-select:hover, .profile-select:focus {
-  border-color: var(--text-muted);
+  border-color: var(--border-light);
 }
 
 .btn-icon {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -107,7 +213,11 @@ header {
   font-size: 1.1rem;
 }
 
-.btn-icon:hover { border-color: var(--text-muted); color: var(--text); }
+.btn-icon:hover { border-color: var(--border-light); color: var(--accent); }
+
+/* The header's text buttons match the icon buttons' height. */
+.profile-bar .btn { min-height: 44px; border-radius: 12px; font-family: var(--sans); font-size: 14px; }
+#restartBtn::before { content: "\21BB"; font-size: 1.05rem; line-height: 1; }
 
 /* ─── Pipeline Steps ──────────────────────────────────── */
 
@@ -1042,22 +1152,502 @@ header {
   margin-top: 0.5rem;
 }
 
+/* ═══ Forge Aurora components ═════════════════════════════
+   Restyles the existing components (ids, classes and handlers unchanged)
+   and adds the home bento, the combined calendar and the command palette. */
+
+/* Frosted glass on the top-level surfaces only: blurring every nested card
+   costs a compositing layer each for no visible gain. */
+.poster-section, .schp-card, .toolbar, .connector-stats .stat-card,
+.tile, .modal, .cmdk, .jobs-bar, .console {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.poster-section, .schp-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.poster-section h3 {
+  font-family: var(--serif);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+
+.panel-title {
+  font-family: var(--serif);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.panel-subtitle { color: var(--text-dim); }
+
+.card, .queue-card, .history-card, .history-item, .toolbar, .stat-card,
+.console, .jobs-bar {
+  border-radius: 16px;
+  border-color: var(--border);
+}
+.card, .queue-card, .history-card, .history-item { background: var(--panel); }
+.card:hover, .queue-card:hover { border-color: var(--border-light); }
+.queue-card.is-next { border-color: var(--green-dim); }
+.history-card { opacity: 0.8; }
+.console { background: rgba(4, 9, 22, 0.6); color: var(--text-dim); }
+.stat-value { font-family: var(--sans); font-weight: 700; color: var(--accent); }
+
+/* ─── Buttons ─── */
+.btn {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  justify-content: center;
+}
+.btn:hover { background: rgba(232, 200, 119, 0.08); border-color: var(--border-light); }
+.btn-sm { min-height: 36px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
+.btn-primary, .btn-gold {
+  border: 0;
+  color: var(--on-gold);
+  font-weight: 700;
+  background: linear-gradient(180deg, var(--gold-top), var(--gold-bottom));
+}
+.btn-primary:hover, .btn-gold:hover {
+  background: linear-gradient(180deg, #f6dd9c, #c99a3a);
+  color: var(--on-gold);
+}
+.btn-primary .spinner { border-color: rgba(26, 18, 5, 0.25); border-top-color: var(--on-gold); }
+.btn-danger { border-color: rgba(255, 128, 128, 0.55); color: var(--red); }
+.btn-danger:hover { background: var(--red-dim); color: #fff; border-color: var(--red-dim); }
+.btn-gold {
+  min-height: 48px;
+  padding: 0 20px;
+  border-radius: 14px;
+  font-family: var(--sans);
+  font-size: 15px;
+  cursor: pointer;
+}
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-family: var(--sans);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.link-btn:hover { color: var(--accent-hi); text-decoration: underline; }
+
+/* ─── Inputs (including the unstyled .input fields) ─── */
+.app input[type="text"], .app input[type="email"], .app input[type="password"],
+.app input[type="number"], .app input[type="url"], .app input[type="datetime-local"],
+.app input:not([type]), .app select, .app textarea,
+.modal input, .modal textarea, .modal select,
+.form-group input, .form-group textarea, .settings-row input[type="number"],
+.settings-row select, .connector-url-input, .comment-edit, .input {
+  background: rgba(4, 9, 22, 0.55);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 12px;
+  font-family: var(--sans);
+}
+.app input[type="text"], .app input[type="email"], .app input[type="password"],
+.app input[type="number"], .app input[type="url"], .app input:not([type]),
+.app select, .input { min-height: 40px; padding: 0.45rem 0.8rem; }
+.app select option, .modal select option { background: #0e1a36; color: var(--text); }
+.app input:focus, .app select:focus, .app textarea:focus,
+.modal input:focus, .modal textarea:focus, .input:focus,
+.comment-edit:focus, .connector-url-input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(232, 200, 119, 0.18);
+}
+.app input::placeholder, .app textarea::placeholder,
+.modal input::placeholder, .modal textarea::placeholder { color: var(--text-muted); }
+.app input[type="file"] { color: var(--text-dim); font-family: var(--sans); }
+.app input[type="checkbox"], .app input[type="radio"] { accent-color: var(--accent); }
+.form-group label { font-family: var(--sans); color: var(--text-dim); letter-spacing: 0.08em; }
+code { font-family: var(--mono); font-size: 0.9em; color: var(--li-text); }
+
+/* ─── Chips, badges, status pills ─── */
+.lifecycle-bar .lc-chip { background: var(--surface); border-color: var(--line); color: var(--text-dim);
+  font-family: var(--sans); min-height: 34px; }
+.lifecycle-bar .lc-chip:hover { background: var(--surface-2); color: var(--text); }
+.trash-reason, .card-meta .tag, .score-badge, .jb-chip, .cfg-badge {
+  font-family: var(--mono);
+  border-radius: 8px;
+}
+.app .trash-reason { background: rgba(4, 9, 22, 0.45); border-color: var(--line); color: var(--text-dim); }
+.card-meta .tag, .score-badge, .jb-chip { background: var(--surface-3); }
+.qc-badge.article { background: var(--li-bg); color: var(--li-text); }
+.qc-badge.thought { background: rgba(232, 200, 119, 0.16); color: var(--accent); }
+
+/* ─── Comment pipeline steps ─── */
+.pipeline { background: transparent; gap: 6px; border-radius: 0; overflow: visible; }
+.pipeline-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px !important;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.pipeline-step:hover { background: var(--surface-2); }
+.pipeline-step.active { background: var(--accent); color: #170f02; border-color: var(--accent); }
+.pipeline-step .step-num { font-family: var(--mono); }
+
+/* ─── Secondary pill row (the original mode tabs) ─── */
+.mode-tabs {
+  background: transparent;
+  gap: 8px;
+  flex-wrap: wrap;
+  overflow: visible;
+  border-radius: 0;
+  margin-bottom: 20px;
+}
+.mode-tabs[hidden] { display: none; }
+.mode-tab {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 999px !important;
+  border: 1px solid var(--line);
+  background: rgba(4, 9, 22, 0.45);
+  color: #c9d6ee;
+  font-family: var(--sans);
+  font-size: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.mode-tab:hover { background: rgba(232, 200, 119, 0.10); color: var(--text); }
+.mode-tab.active { background: var(--accent); color: #170f02; border-color: var(--accent); }
+
+/* ─── Modals and toasts ─── */
+.modal-backdrop { background: rgba(2, 5, 14, 0.62); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.modal {
+  background: rgba(12, 22, 46, 0.96);
+  border: 1px solid rgba(232, 200, 119, 0.30);
+  border-radius: 20px;
+}
+.modal h2 { font-family: var(--serif); color: var(--accent); letter-spacing: 0.04em; }
+.toast {
+  background: rgba(12, 22, 46, 0.96);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--info);
+  border-radius: 14px;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.toast.error { border-left-color: var(--red); }
+.toast.success { border-left-color: var(--green); }
+.toast.warn { border-left-color: var(--yellow); }
+.toast .toast-close { min-width: 28px; min-height: 28px; }
+
+::-webkit-scrollbar-thumb { background: rgba(232, 200, 119, 0.25); }
+
+/* ─── Platform chips (LinkedIn blue, X white) ─── */
+.plat-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.plat-li { background: var(--li-bg); border: 1px solid var(--li-line); color: var(--li-text); }
+.plat-x { background: var(--x-bg); border: 1px solid var(--x-line); color: var(--x-text); }
+
+/* ─── Home ─── */
+.home-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 4px 0;
+  margin-bottom: 20px;
+}
+.home-greet {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: clamp(28px, 3.4vw, 44px);
+  letter-spacing: 0.03em;
+  line-height: 1.15;
+  color: var(--accent);
+}
+.home-sub { margin: 6px 0 0; font-size: 16px; color: #a9bad6; }
+.bento {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 1000px) { .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .bento { grid-template-columns: minmax(0, 1fr); } }
+.tile {
+  border-radius: 22px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.tile-wide { grid-column: 1 / -1; }
+.tile-ring { display: flex; align-items: center; gap: 18px; }
+.tile-ring svg { flex: none; }
+.tile-label {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #9fb0cc;
+}
+.tile-big { font-size: 44px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+.tile-big small { font-size: 16px; font-weight: 500; color: #7fc9ff; margin-left: 6px; letter-spacing: 0; }
+.tile-mid { font-size: 28px; font-weight: 700; margin-top: 4px; line-height: 1.2; overflow-wrap: anywhere; }
+.tile-note { font-size: 14px; color: #c9d6ee; }
+.tile-caption { font-size: 13px; color: #9fb0cc; }
+.tile-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.tile-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 20px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+.tile-head .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tile-tip { border-color: rgba(124, 92, 255, 0.35); grid-column: span 2; }
+@media (max-width: 1000px) { .tile-tip { grid-column: auto; } }
+.tile-tip .tile-label { color: var(--violet); }
+.conn-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(201, 214, 238, 0.10);
+  font-size: 14px;
+}
+.conn-row .ok { color: var(--accent); }
+.conn-row .bad { color: var(--yellow); text-align: right; }
+.ring-track { stroke: rgba(61, 184, 255, 0.16); }
+.ring-arc { stroke: var(--info); transition: stroke-dasharray 0.6s ease; }
+
+/* ─── Combined calendar ─── */
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+}
+.cal-day {
+  border-radius: 16px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid rgba(201, 214, 238, 0.10);
+  min-width: 0;
+}
+.cal-day.is-today { border-color: rgba(232, 200, 119, 0.45); }
+.cal-day-label { font-size: 14px; font-weight: 700; color: var(--text); }
+.cal-day-label span { color: var(--accent); font-weight: 500; margin-left: 6px; }
+.cal-post {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  text-align: left;
+  font-family: var(--sans);
+  color: var(--text);
+  cursor: pointer;
+}
+.cal-post.li { background: rgba(10, 102, 194, 0.22); border: 1px solid rgba(124, 192, 255, 0.35); }
+.cal-post.x { background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.18); }
+.cal-post:hover { border-color: var(--border-light); }
+.cal-thumb {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 8px;
+  object-fit: contain;
+}
+.cal-thumb.photo { object-fit: cover; }
+.cal-text {
+  font-size: 14px;
+  line-height: 1.35;
+  color: #f2f6ff;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.cal-meta { font-size: 12px; margin-top: 3px; }
+.cal-post.li .cal-meta { color: #a9d2ff; }
+.cal-post.x .cal-meta { color: #c9d6ee; }
+.cal-warn { color: #ff9a72; font-weight: 600; }
+.cal-empty { color: var(--text-dim); font-size: 14px; padding: 8px 2px; }
+.cal-note {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 170, 0, 0.12);
+  color: #ffcc66;
+  font-size: 13px;
+}
+
+/* ─── Command palette ─── */
+.cmdk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(2, 5, 14, 0.62);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.cmdk-backdrop[hidden] { display: none; }
+.cmdk {
+  width: min(640px, 100%);
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  background: rgba(12, 22, 46, 0.96);
+  border: 1px solid rgba(232, 200, 119, 0.30);
+  overflow: hidden;
+  animation: modalIn 0.15s ease;
+}
+.cmdk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(201, 214, 238, 0.12);
+}
+.cmdk-head input {
+  flex: 1;
+  min-height: 40px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 17px;
+}
+.cmdk-head input::placeholder { color: #8fa1bf; }
+.cmdk-close {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: #c9d6ee;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cmdk-list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; }
+.cmdk-item {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+.cmdk-item .cmdk-label { flex: 1; }
+.cmdk-item .cmdk-group { font-size: 12px; color: #9fb0cc; }
+.cmdk-item[aria-selected="true"] { background: rgba(232, 200, 119, 0.14); }
+.cmdk-empty { padding: 14px 12px; color: var(--text-dim); font-size: 14px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .brand-text { font-size: 14px; }
+  .top-nav { width: 100%; }
+  .top-nav-item { flex: 1 1 auto; padding: 0 10px; }
+  .connector-stats { flex-wrap: wrap; }
+}
+
+/* Motion is decoration here, never information - except the spinners, which
+   say "working" and keep a slow turn. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .spinner, .spinner-sm, .jobs-bar .jb-title .spinner-sm {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
 </style>
 </head>
 <body>
 
 <div class="app" id="app">
 
-  <!-- Header -->
+  <!-- Top bar: brand, the five destinations, the command palette, and the
+       profile controls. Every original control keeps its id and handler. -->
   <header>
-    <div class="logo">LinkedIn <span>Autopilot</span></div>
+    <button type="button" class="brand" onclick="switchGroup('home')" aria-label="Guild Autopilot, go to Home">
+      <img src="/static/AIBuildersGuild-Shield-transparent-128.png" alt="" width="44" height="44">
+      <span class="brand-text">GUILD<br>AUTOPILOT</span>
+    </button>
+    <nav class="top-nav" aria-label="Main">
+      <button type="button" class="top-nav-item active" data-group="home" aria-current="page" onclick="switchGroup('home')">Home</button>
+      <button type="button" class="top-nav-item" data-group="calendar" onclick="switchGroup('calendar')">Calendar</button>
+      <button type="button" class="top-nav-item" data-group="engage" onclick="switchGroup('engage')">Engage</button>
+      <button type="button" class="top-nav-item" data-group="create" onclick="switchGroup('create')">Create</button>
+      <button type="button" class="top-nav-item" data-group="settings" onclick="switchGroup('settings')">Settings</button>
+    </nav>
+    <button type="button" class="cmdk-open" id="cmdkOpenBtn" onclick="openPalette()"
+            aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+      <span class="cmdk-open-label">Search or run a command</span>
+      <kbd>⌘K</kbd>
+    </button>
     <div class="profile-bar">
-      <select class="profile-select" id="profileSelect" onchange="switchProfile()">
+      <select class="profile-select" id="profileSelect" onchange="switchProfile()" aria-label="Profile">
         <option value="">Loading...</option>
       </select>
-      <button class="btn-icon" onclick="openAddProfile()" title="Add profile">+</button>
-      <button class="btn-icon" onclick="openConfigModal()" title="Edit profile config">⚙</button>
-      <button class="btn-icon" onclick="setDefaultProfile()" title="Set as default profile">★</button>
+      <button class="btn-icon" onclick="openAddProfile()" title="Add profile" aria-label="Add profile">+</button>
+      <button class="btn-icon" onclick="openConfigModal()" title="Edit profile config" aria-label="Edit profile config">⚙</button>
+      <button class="btn-icon" onclick="setDefaultProfile()" title="Set as default profile" aria-label="Set as default profile">★</button>
       <!-- Logging in was the one step in the whole flow with no button, which
            is why it still needed a terminal. Everything else the operator does
            lives in this page. -->
@@ -1073,12 +1663,14 @@ header {
     </div>
   </header>
 
-  <!-- Mode Tabs -->
-  <nav class="mode-tabs">
-    <button class="mode-tab active" data-mode="comments" onclick="switchMode('comments')">Comment Pipeline</button>
+  <!-- Secondary pill row: the original mode tabs. switchMode() shows only the
+       ones in the active top-level group (Engage or Create) and hides the
+       row for single-panel groups. -->
+  <nav class="mode-tabs" id="subNav" aria-label="Section" hidden>
+    <button class="mode-tab" data-mode="comments" onclick="switchMode('comments')">Comment Pipeline</button>
     <button class="mode-tab" data-mode="connector" onclick="switchMode('connector')">Auto-Connector</button>
-    <button class="mode-tab" data-mode="poster" onclick="switchMode('poster')">Post Creator</button>
     <button class="mode-tab" data-mode="scheduler" onclick="switchMode('scheduler')">Engagement Scheduler</button>
+    <button class="mode-tab" data-mode="poster" onclick="switchMode('poster')">Post Creator</button>
     <button class="mode-tab" data-mode="scheduled" onclick="switchMode('scheduled')">Scheduled Posting</button>
     <button class="mode-tab" data-mode="settings" onclick="switchMode('settings')">Settings</button>
   </nav>
@@ -1089,8 +1681,101 @@ header {
     <div class="jb-list" id="jobsList"></div>
   </div>
 
+  <!-- ═══ HOME ════════════════════════════════════════
+       Every number here is read from an existing endpoint; nothing is
+       estimated. A tile that cannot read its source says so. -->
+  <div class="mode-panel active" id="mode-home">
+    <section class="home-hero">
+      <div>
+        <h1 class="home-greet" id="homeGreeting">Welcome</h1>
+        <p class="home-sub" id="homeSubline">Reading your queues…</p>
+      </div>
+      <button type="button" class="btn-gold" onclick="switchMode('poster')">+ Forge a post</button>
+    </section>
+
+    <div class="bento">
+      <div class="tile tile-ring">
+        <svg width="104" height="104" viewBox="0 0 104 104" aria-hidden="true">
+          <circle class="ring-track" cx="52" cy="52" r="42" fill="none" stroke-width="10"></circle>
+          <circle class="ring-arc" id="homeRingArc" cx="52" cy="52" r="42" fill="none" stroke-width="10"
+                  stroke-linecap="round" stroke-dasharray="0 264" transform="rotate(-90 52 52)"
+                  style="visibility:hidden"></circle>
+        </svg>
+        <div>
+          <div class="tile-label" id="homeQueuedLabel">Queued in Buffer</div>
+          <div class="tile-big"><span id="homeQueuedNum">—</span><small id="homeQueuedOf"></small></div>
+          <div class="tile-caption" id="homeQueuedCaption">Reading the queue…</div>
+        </div>
+      </div>
+
+      <div class="tile">
+        <div class="tile-label">Comments</div>
+        <div class="tile-big"><span id="homeCommentsPosted">—</span><small>posted</small></div>
+        <div class="tile-note" id="homeCommentsDrafts">Reading the comment store…</div>
+        <button type="button" class="link-btn" onclick="switchMode('comments')">Open the comment pipeline →</button>
+      </div>
+
+      <div class="tile">
+        <div class="tile-label">Writing with</div>
+        <div class="tile-mid" id="homeProviderModel">—</div>
+        <div class="tile-note" id="homeProviderDetail">Reading the provider setting…</div>
+        <button type="button" class="link-btn" onclick="switchMode('settings')">Change provider →</button>
+      </div>
+
+      <div class="tile tile-wide">
+        <div class="tile-head">
+          <h2>Coming up</h2>
+          <div class="chips">
+            <span class="plat-chip plat-li">LinkedIn</span>
+            <span class="plat-chip plat-x">X</span>
+            <button type="button" class="link-btn" style="margin:0 0 0 6px" onclick="switchMode('calendar')">Open calendar →</button>
+          </div>
+        </div>
+        <div class="cal-grid" id="homeCalPreview"><div class="cal-empty">Reading the queues…</div></div>
+      </div>
+
+      <div class="tile">
+        <div class="tile-label" style="margin-bottom:10px">Connected</div>
+        <div id="homeConnected"><div class="cal-empty">Reading the accounts…</div></div>
+      </div>
+
+      <div class="tile tile-tip">
+        <div class="tile-label" style="margin-bottom:10px">Shortcut</div>
+        <p class="tile-note" style="margin:0;font-size:16px;line-height:1.5">
+          Press <kbd>⌘K</kbd> (or <kbd>Ctrl K</kbd>) anywhere to jump to a section,
+          switch the scheduled-posting platform, schedule pending posts, or log in.
+        </p>
+        <button type="button" class="link-btn" onclick="openPalette()">Open the command bar →</button>
+      </div>
+    </div>
+  </div><!-- end mode-home -->
+
+  <!-- ═══ CALENDAR ════════════════════════════════════
+       Both platforms' queues in one view, by day. Read-only: it uses the same
+       queue endpoint as Scheduled Posting and links there for any action. -->
+  <div class="mode-panel" id="mode-calendar">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Calendar</div>
+        <div class="panel-subtitle">Scheduled and published posts from LinkedIn and X, by day.</div>
+      </div>
+      <div class="btn-group" style="align-items:center">
+        <span class="plat-chip plat-li">LinkedIn</span>
+        <span class="plat-chip plat-x">X</span>
+        <select id="calRange" aria-label="Which days to show" onchange="renderCalendar()">
+          <option value="upcoming">From today</option>
+          <option value="all">All days</option>
+        </select>
+        <button class="btn" onclick="loadCalendar(true)">Refresh</button>
+        <button class="btn btn-primary" onclick="switchMode('scheduled')">Full queue →</button>
+      </div>
+    </div>
+    <div id="calNotes"></div>
+    <div class="cal-grid" id="calBody"><div class="cal-empty">Reading the queues…</div></div>
+  </div><!-- end mode-calendar -->
+
   <!-- ═══ COMMENTS MODE ═══════════════════════════════ -->
-  <div class="mode-panel active" id="mode-comments">
+  <div class="mode-panel" id="mode-comments">
 
   <!-- Pipeline -->
   <div class="pipeline" id="pipeline">
@@ -1903,6 +2588,23 @@ header {
 </div>
 
 
+<!-- ─── Command palette (Cmd+K / Ctrl+K) ────────────────
+     Every command calls an existing function; there is no backend of its own. -->
+<div class="cmdk-backdrop" id="cmdkBackdrop" hidden>
+  <div class="cmdk" role="dialog" aria-modal="true" aria-label="Command bar">
+    <div class="cmdk-head">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9fb0cc" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+      <label for="cmdkInput" class="sr-only">Command</label>
+      <input id="cmdkInput" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Type a command or a section name"
+             role="combobox" aria-expanded="true" aria-controls="cmdkList" aria-autocomplete="list">
+      <button type="button" class="cmdk-close" id="cmdkCloseBtn" aria-label="Close command bar">esc</button>
+    </div>
+    <ul class="cmdk-list" id="cmdkList" role="listbox" aria-label="Commands"></ul>
+  </div>
+</div>
+
+
 <script>
 // ─── State ──────────────────────────────────────────────
 
@@ -1967,6 +2669,13 @@ function switchProfile() {
   refreshActiveModels();
   if (document.getElementById('mode-settings').classList.contains('active')) {
     loadSettings();
+  }
+  // Home and Calendar read per-profile queues; repaint whichever is showing.
+  if (document.getElementById('mode-home').classList.contains('active')) {
+    loadHome();
+  }
+  if (document.getElementById('mode-calendar').classList.contains('active')) {
+    loadCalendar(false);
   }
 }
 
@@ -3453,8 +4162,16 @@ function switchMode(mode) {
   document.querySelectorAll('.mode-panel').forEach(p => {
     p.classList.toggle('active', p.id === 'mode-' + mode);
   });
+  navPaint(mode);
 
   refreshActiveModels();
+
+  if (mode === 'home') {
+    loadHome();
+  }
+  if (mode === 'calendar') {
+    loadCalendar(false);
+  }
 
   if (mode === 'connector') {
     loadConnectorStats();
@@ -3474,6 +4191,586 @@ function switchMode(mode) {
     loadSettings();
   }
 }
+
+// ─── Top-level navigation (Forge Aurora) ────────────────
+//
+// Five destinations over the original mode panels. A group is just a list of
+// modes; switchMode() stays the one function that changes what is on screen,
+// and navPaint() (called from it) keeps the top bar and the secondary pill
+// row in step, whichever way a mode was reached (tab, palette, link).
+
+const NAV_GROUPS = {
+  home: ['home'],
+  calendar: ['calendar'],
+  engage: ['comments', 'connector', 'scheduler'],
+  create: ['poster', 'scheduled'],
+  settings: ['settings']
+};
+
+// The last mode shown in each group, so Engage returns you to the tab you
+// were on rather than always the first one.
+const navLastMode = { engage: 'comments', create: 'poster' };
+
+function navGroupOf(mode) {
+  for (const [group, modes] of Object.entries(NAV_GROUPS)) {
+    if (modes.includes(mode)) return group;
+  }
+  return null;
+}
+
+function switchGroup(group) {
+  const modes = NAV_GROUPS[group];
+  if (!modes) return;
+  switchMode(navLastMode[group] || modes[0]);
+}
+
+function navPaint(mode) {
+  const group = navGroupOf(mode);
+  if (group) navLastMode[group] = mode;
+  document.querySelectorAll('.top-nav-item').forEach(b => {
+    const on = b.dataset.group === group;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
+  const modes = (group && NAV_GROUPS[group]) || [];
+  const sub = document.getElementById('subNav');
+  if (sub) sub.hidden = modes.length < 2;
+  document.querySelectorAll('.mode-tab').forEach(t => {
+    t.style.display = modes.includes(t.dataset.mode) ? '' : 'none';
+  });
+}
+
+// ─── Both platforms' queues, shared by Home and Calendar ─
+
+const CAL_PLATFORMS = ['linkedin', 'x'];
+const CAL_PLATFORM_LABEL = { linkedin: 'LinkedIn', x: 'X' };
+const SEAL_SRC = '/static/AIBuildersGuild-Shield-transparent-128.png';
+
+// One read of both queues, reused for a minute so Home -> Calendar does not
+// read twice. The server also caches its Buffer reconcile (120s), so this
+// never adds Buffer traffic beyond what the Scheduled Posting tab already does.
+let calCache = null;
+
+async function calFetch(force) {
+  if (!currentProfile) return null;
+  const prof = currentProfile;
+  if (!force && calCache && calCache.profile === prof &&
+      (Date.now() - calCache.at) < 60000) {
+    return calCache;
+  }
+  const out = { profile: prof, at: Date.now(), byPlat: {}, errors: {} };
+  await Promise.all(CAL_PLATFORMS.map(async p => {
+    try {
+      const res = await fetch('/api/scheduled/' + encodeURIComponent(prof) +
+                              '/queue?platform=' + encodeURIComponent(p));
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+      out.byPlat[p] = d;
+    } catch (e) {
+      out.byPlat[p] = null;
+      out.errors[p] = e.message || String(e);
+    }
+  }));
+  // A profile switch while the reads were in flight: these rows are the old
+  // profile's, and painting them would put one account's posts under another.
+  if (prof !== currentProfile) return null;
+  calCache = out;
+  return out;
+}
+
+// Every row of both platforms, flattened, each tagged with its platform.
+function calAllRows(data) {
+  const rows = [];
+  CAL_PLATFORMS.forEach(p => {
+    const d = data && data.byPlat[p];
+    if (!d) return;
+    (d.order || []).forEach(st => (d.posts[st] || []).forEach(r => {
+      rows.push(Object.assign({}, r, { platform: p }));
+    }));
+  });
+  return rows;
+}
+
+function calCount(data, status) {
+  return CAL_PLATFORMS.reduce((n, p) => {
+    const d = data && data.byPlat[p];
+    return n + ((d && d.counts && d.counts[status]) || 0);
+  }, 0);
+}
+
+function calDayKey(dt) {
+  return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') +
+         '-' + String(dt.getDate()).padStart(2, '0');
+}
+
+function calDayLabel(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  const day = new Date(y, m - 1, d);
+  const today = new Date();
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  const label = day.toLocaleDateString(undefined,
+    { weekday: 'short', month: 'short', day: 'numeric' });
+  if (key === calDayKey(today)) return { label, rel: 'Today' };
+  if (key === calDayKey(tomorrow)) return { label, rel: 'Tomorrow' };
+  return { label, rel: '' };
+}
+
+// Rows grouped by local day of their due time, days in order. Rows with no
+// due time (pending, not given a date yet) go in a trailing group.
+function calGroupByDay(rows, fromToday) {
+  const todayKey = calDayKey(new Date());
+  const days = new Map();
+  const undated = [];
+  rows.forEach(r => {
+    const dt = r.due_at ? new Date(r.due_at) : null;
+    if (!dt || isNaN(dt.getTime())) { undated.push(r); return; }
+    const key = calDayKey(dt);
+    if (fromToday && key < todayKey) return;
+    if (!days.has(key)) days.set(key, []);
+    days.get(key).push(Object.assign({}, r, { _t: dt.getTime() }));
+  });
+  const out = [...days.keys()].sort().map(key => ({
+    key,
+    rows: days.get(key).sort((a, b) => a._t - b._t)
+  }));
+  return { days: out, undated };
+}
+
+function calPostHtml(r) {
+  const plat = r.platform === 'x' ? 'x' : 'li';
+  const im = r.image || {};
+  const thumb = (im.state === 'attached' && im.url)
+    ? '<img class="cal-thumb photo" loading="lazy" decoding="async" alt="" src="' +
+      schpEsc(im.url) + '" onerror="this.onerror=null;this.className=\'cal-thumb\';' +
+      'this.src=\'' + SEAL_SRC + '\'">'
+    : '<img class="cal-thumb" alt="" src="' + SEAL_SRC + '">';
+  const time = r.due_at
+    ? new Date(r.due_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    : 'no time set';
+  // A row whose image went missing must never look like a text-only post.
+  const imgWarn = (im.state === 'missing' || im.state === 'lost')
+    ? ' · <span class="cal-warn">image missing</span>' : '';
+  const badge = SCHP_BADGE[r.status] || SCHP_BADGE.pending;
+  return '<button type="button" class="cal-post ' + plat + '" ' +
+    'title="Open the ' + schpEsc(CAL_PLATFORM_LABEL[r.platform]) + ' queue" ' +
+    'onclick="calOpenQueue(\'' + (r.platform === 'x' ? 'x' : 'linkedin') + '\')">' +
+    thumb +
+    '<span style="min-width:0;display:block">' +
+      '<span class="cal-text">' +
+        (schpEsc(r.preview) || '<em style="color:var(--text-dim)">(no text)</em>') +
+      '</span>' +
+      '<span class="cal-meta" style="display:block">' +
+        schpEsc(CAL_PLATFORM_LABEL[r.platform]) + ' · ' + schpEsc(time) + ' · ' +
+        '<span style="color:' + badge.fg + '">' + schpEsc(r.label || r.status) + '</span>' +
+        imgWarn +
+      '</span>' +
+    '</span></button>';
+}
+
+function calDayHtml(day) {
+  const { label, rel } = calDayLabel(day.key);
+  const today = rel === 'Today';
+  return '<div class="cal-day' + (today ? ' is-today' : '') + '">' +
+    '<div class="cal-day-label">' + schpEsc(label) +
+    (rel ? '<span>' + rel + '</span>' : '') + '</div>' +
+    day.rows.map(calPostHtml).join('') + '</div>';
+}
+
+function calNotesHtml(data) {
+  const notes = [];
+  CAL_PLATFORMS.forEach(p => {
+    const name = CAL_PLATFORM_LABEL[p];
+    if (data.errors[p]) {
+      notes.push('Could not read the ' + name + ' queue: ' + data.errors[p]);
+      return;
+    }
+    const d = data.byPlat[p];
+    if (d && d.reconcile && d.reconcile.error) {
+      notes.push(name + ': showing last known state. ' + d.reconcile.error);
+    }
+  });
+  return notes.map(n => '<div class="cal-note">' + schpEsc(n) + '</div>').join('');
+}
+
+// Open the full Scheduled Posting queue on a given platform. Sets the platform
+// first so switchMode's queue read is the only read.
+function calOpenQueue(p) {
+  if (p !== schpPlatform) {
+    schpPlatform = p;
+    // The selection is keys into one platform's store; it does not carry over.
+    schpSelected = new Set();
+    schpLastQueueData = null;
+    schpPaintPlatform();
+  }
+  switchMode('scheduled');
+}
+
+let calLastData = null;
+
+async function loadCalendar(force) {
+  if (!currentProfile) return;
+  const data = await calFetch(!!force);
+  if (!data) return;
+  calLastData = data;
+  renderCalendar();
+}
+
+function renderCalendar() {
+  const body = document.getElementById('calBody');
+  const notes = document.getElementById('calNotes');
+  const data = calLastData;
+  if (!body || !data) return;
+  notes.innerHTML = calNotesHtml(data);
+  const fromToday = (document.getElementById('calRange') || {}).value !== 'all';
+  const { days, undated } = calGroupByDay(calAllRows(data), fromToday);
+  const parts = days.map(calDayHtml);
+  if (undated.length) {
+    parts.push('<div class="cal-day"><div class="cal-day-label">Not scheduled yet' +
+      '<span>' + undated.length + '</span></div>' +
+      undated.map(calPostHtml).join('') + '</div>');
+  }
+  body.innerHTML = parts.length ? parts.join('')
+    : '<div class="cal-empty">' + (fromToday
+        ? 'Nothing is scheduled from today on. Choose "All days" to see earlier posts.'
+        : 'Neither queue has any posts yet.') + '</div>';
+}
+
+// ─── Home ───────────────────────────────────────────────
+
+function homeGreetingWord(hour) {
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function homePaintGreeting() {
+  const el = document.getElementById('homeGreeting');
+  if (!el) return;
+  const name = currentProfile ? (currentProfile.charAt(0).toUpperCase() + currentProfile.slice(1)) : '';
+  el.textContent = homeGreetingWord(new Date().getHours()) + (name ? ', ' + name : '');
+}
+
+async function loadHome() {
+  homePaintGreeting();
+  if (!currentProfile) return;
+  // Independent reads: one failing must not blank the others.
+  loadLifecycle().then(homePaintComments);
+  homeLoadProvider();
+  homeLoadSlots();
+  const data = await calFetch(false);
+  if (!data) return;
+  homeQueueData = data;
+  homePaintQueue();
+  homePaintPreview(data);
+  homePaintConnected(data);
+}
+
+function homePaintComments() {
+  const c = lifecycleCounts || {};
+  document.getElementById('homeCommentsPosted').textContent = c.COMMENTED || 0;
+  const drafts = c.GENERATED || 0;
+  document.getElementById('homeCommentsDrafts').textContent =
+    drafts === 1 ? '1 draft ready to review' : drafts + ' drafts ready to review';
+}
+
+async function homeLoadProvider() {
+  const prof = currentProfile;
+  const model = document.getElementById('homeProviderModel');
+  const detail = document.getElementById('homeProviderDetail');
+  try {
+    const res = await fetch('/api/profiles/' + encodeURIComponent(prof) + '/provider');
+    const p = await res.json();
+    if (prof !== currentProfile) return;
+    if (!res.ok) throw new Error(p.error || ('HTTP ' + res.status));
+    model.textContent = p.model || '(provider default)';
+    let where;
+    if (p.local) where = 'runs locally, no key needed';
+    else if (p.key && p.key.set && p.key.source === 'keyring') where = 'key in your system keychain';
+    else if (p.key && p.key.set) where = 'key from the environment';
+    else where = 'no API key set, generation will fail';
+    detail.textContent = (p.label || p.provider) + ' · ' + where;
+    detail.style.color = (p.local || (p.key && p.key.set)) ? '' : 'var(--yellow)';
+  } catch (e) {
+    model.textContent = '—';
+    detail.textContent = 'Could not read the provider setting: ' + e.message;
+  }
+}
+
+// Buffer's scheduled-post limit, when the app already knows it. The drain
+// status reports it (a cached Buffer read) only while the drain is switched
+// on; otherwise the tile says the limit is unknown instead of guessing one.
+// Re-read at most every ten minutes: Buffer's free plan rations API calls.
+let homeSlots = { profile: null, at: 0, slots: null };
+let homeQueueData = null;
+
+async function homeLoadSlots() {
+  const prof = currentProfile;
+  if (homeSlots.profile === prof && (Date.now() - homeSlots.at) < 600000) {
+    homePaintQueue();
+    return;
+  }
+  try {
+    const res = await fetch('/api/drain/' + encodeURIComponent(prof) + '/status?slots=1');
+    const d = await res.json();
+    if (prof !== currentProfile) return;
+    homeSlots = { profile: prof, at: Date.now(), slots: (res.ok && d.slots) || null };
+  } catch (e) {
+    homeSlots = { profile: prof, at: Date.now(), slots: null };
+  }
+  homePaintQueue();
+}
+
+function homePaintQueue() {
+  const data = homeQueueData;
+  if (!data || data.profile !== currentProfile) return;
+  const scheduled = calCount(data, 'scheduled');
+  const held = calCount(data, 'held');
+  const pending = calCount(data, 'pending');
+  const perPlat = CAL_PLATFORMS.map(p => {
+    const d = data.byPlat[p];
+    return CAL_PLATFORM_LABEL[p] + ' ' + ((d && d.counts && d.counts.scheduled) || 0);
+  }).join(' · ');
+
+  const slots = (homeSlots.profile === currentProfile) ? homeSlots.slots : null;
+  const num = document.getElementById('homeQueuedNum');
+  const of = document.getElementById('homeQueuedOf');
+  const cap = document.getElementById('homeQueuedCaption');
+  const arc = document.getElementById('homeRingArc');
+  const circumference = 2 * Math.PI * 42;
+  const bits = [];
+  if (slots && slots.limit) {
+    // Buffer's own count: every channel in the organisation shares the limit.
+    num.textContent = slots.used;
+    of.textContent = 'of ' + slots.limit;
+    arc.setAttribute('stroke-dasharray',
+      (circumference * Math.min(1, slots.used / slots.limit)).toFixed(1) + ' ' + circumference.toFixed(1));
+    // A round cap on a zero-length dash still draws a dot.
+    arc.style.visibility = slots.used > 0 ? 'visible' : 'hidden';
+    bits.push('Buffer’s count, all channels');
+    bits.push(perPlat);
+  } else {
+    num.textContent = scheduled;
+    of.textContent = '';
+    arc.setAttribute('stroke-dasharray', '0 ' + circumference.toFixed(1));
+    arc.style.visibility = 'hidden';
+    bits.push(perPlat);
+    bits.push('Buffer limit unknown until the drain is on');
+  }
+  if (held) bits.push(held + ' held for a free slot');
+  cap.textContent = bits.join(' · ');
+
+  const sub = document.getElementById('homeSubline');
+  const parts = [];
+  if (scheduled) parts.push(scheduled + ' scheduled');
+  if (held) parts.push(held + ' held');
+  if (pending) parts.push(pending + ' pending');
+  sub.textContent = parts.length
+    ? parts.join(', ') + ' across LinkedIn and X.'
+    : 'Nothing is queued on LinkedIn or X yet.';
+}
+
+function homePaintPreview(data) {
+  const box = document.getElementById('homeCalPreview');
+  const { days } = calGroupByDay(calAllRows(data), true);
+  const next = days.slice(0, 3);
+  box.innerHTML = calNotesHtml(data) + (next.length
+    ? next.map(calDayHtml).join('')
+    : '<div class="cal-empty">Nothing is scheduled from today on.</div>');
+}
+
+function homePaintConnected(data) {
+  const box = document.getElementById('homeConnected');
+  box.innerHTML = CAL_PLATFORMS.map(p => {
+    const name = CAL_PLATFORM_LABEL[p];
+    const d = data.byPlat[p];
+    if (!d) {
+      return '<div class="conn-row"><span>' + name + '</span>' +
+             '<span class="bad">could not read</span></div>';
+    }
+    const slug = d.config && d.config.identity_slug;
+    const who = slug ? (p === 'x' ? '@' + String(slug).replace(/^@/, '') : slug) : 'no identity set';
+    const ok = d.config && d.config.configured && slug;
+    return '<div class="conn-row"><span>' + name + ' · ' + schpEsc(who) + '</span>' +
+      (ok ? '<span class="ok">Configured</span>'
+          : '<span class="bad" title="' + schpEsc((d.config && d.config.problem) || '') +
+            '">Not configured</span>') +
+      '</div>';
+  }).join('');
+}
+
+// ─── Command palette ────────────────────────────────────
+//
+// Cmd+K / Ctrl+K anywhere, or the search button in the top bar. Each command
+// runs an existing function, so the palette can do nothing a button cannot.
+
+let cmdkOpen = false;
+let cmdkItems = [];
+let cmdkIndex = 0;
+let cmdkReturnFocus = null;
+
+function cmdkCommands() {
+  const drafts = (lifecycleCounts && lifecycleCounts.GENERATED) || 0;
+  const go = (mode) => () => switchMode(mode);
+  const cmds = [
+    { label: 'Home', group: 'Go to', run: go('home') },
+    { label: 'Calendar', group: 'Go to', run: go('calendar') },
+    { label: 'Comment pipeline', group: 'Engage', run: go('comments') },
+    { label: 'Auto-connector', group: 'Engage', run: go('connector') },
+    { label: 'Engagement scheduler', group: 'Engage', run: go('scheduler') },
+    { label: 'Post creator', group: 'Create', run: go('poster') },
+    { label: 'Scheduled posting', group: 'Create', run: go('scheduled') },
+    { label: 'Settings', group: 'Go to', run: go('settings') },
+    { label: 'Scheduled posting: switch to LinkedIn', group: 'Platform',
+      run: () => calOpenQueue('linkedin') },
+    { label: 'Scheduled posting: switch to X', group: 'Platform',
+      run: () => calOpenQueue('x') },
+    { label: 'Schedule pending posts…', group: 'Buffer',
+      keywords: 'buffer schedule pending',
+      run: () => { switchMode('scheduled'); schpSchedule(); } },
+    { label: 'Refresh the scheduled queue', group: 'Buffer',
+      run: () => { switchMode('scheduled'); } },
+    { label: 'Scrape my LinkedIn feed', group: 'Engage', keywords: 'start scraping',
+      run: () => { switchMode('comments'); goStep('scrape'); startScrape(); } },
+    { label: 'Review scraped posts', group: 'Engage',
+      run: () => { switchMode('comments'); showNewPosts(); } },
+    { label: 'Review comment drafts (' + drafts + ')', group: 'Engage',
+      run: () => { switchMode('comments'); goStep('review'); } },
+    { label: 'Change AI provider', group: 'Settings', keywords: 'model key grok openai',
+      run: go('settings') },
+    { label: 'Log in to LinkedIn', group: 'Account', run: () => startLogin() },
+    { label: 'Add a profile', group: 'Account', run: () => openAddProfile() },
+    { label: 'Edit profile config', group: 'Account', run: () => openConfigModal() },
+    { label: 'Set this profile as default', group: 'Account', run: () => setDefaultProfile() },
+    { label: 'Restart the dashboard', group: 'App', run: () => restartDashboard() },
+  ];
+  const sel = document.getElementById('profileSelect');
+  Array.from((sel && sel.options) || []).forEach(o => {
+    if (!o.value || o.value === currentProfile) return;
+    cmds.push({ label: 'Switch profile to ' + o.value, group: 'Profile', run: () => {
+      sel.value = o.value;
+      switchProfile();
+    } });
+  });
+  return cmds;
+}
+
+function openPalette() {
+  if (cmdkOpen) return;
+  // Never on top of a confirmation: its Enter/Escape handler is listening.
+  if (document.querySelector('.modal-backdrop.active')) return;
+  cmdkOpen = true;
+  cmdkReturnFocus = document.activeElement;
+  const input = document.getElementById('cmdkInput');
+  input.value = '';
+  document.getElementById('cmdkBackdrop').hidden = false;
+  cmdkFilter();
+  input.focus();
+}
+
+function closePalette() {
+  if (!cmdkOpen) return;
+  cmdkOpen = false;
+  document.getElementById('cmdkBackdrop').hidden = true;
+  const back = cmdkReturnFocus;
+  cmdkReturnFocus = null;
+  if (back && typeof back.focus === 'function' && document.contains(back)) back.focus();
+}
+
+function cmdkFilter() {
+  const q = document.getElementById('cmdkInput').value.trim().toLowerCase();
+  const words = q ? q.split(/\s+/) : [];
+  cmdkItems = cmdkCommands().filter(c => {
+    const hay = (c.label + ' ' + c.group + ' ' + (c.keywords || '')).toLowerCase();
+    return words.every(w => hay.includes(w));
+  });
+  cmdkIndex = 0;
+  cmdkRender();
+}
+
+function cmdkRender() {
+  const list = document.getElementById('cmdkList');
+  const input = document.getElementById('cmdkInput');
+  if (!cmdkItems.length) {
+    list.innerHTML = '<li class="cmdk-empty" role="presentation">No matching command.</li>';
+    input.removeAttribute('aria-activedescendant');
+    return;
+  }
+  list.innerHTML = cmdkItems.map((c, i) =>
+    '<li class="cmdk-item" role="option" id="cmdk-opt-' + i + '" data-idx="' + i + '" ' +
+    'aria-selected="' + (i === cmdkIndex ? 'true' : 'false') + '">' +
+    '<span class="cmdk-label">' + esc(c.label) + '</span>' +
+    '<span class="cmdk-group">' + esc(c.group) + '</span></li>').join('');
+  input.setAttribute('aria-activedescendant', 'cmdk-opt-' + cmdkIndex);
+}
+
+function cmdkMove(delta) {
+  if (!cmdkItems.length) return;
+  cmdkIndex = (cmdkIndex + delta + cmdkItems.length) % cmdkItems.length;
+  document.querySelectorAll('#cmdkList .cmdk-item').forEach((el, i) => {
+    el.setAttribute('aria-selected', i === cmdkIndex ? 'true' : 'false');
+  });
+  document.getElementById('cmdkInput').setAttribute('aria-activedescendant', 'cmdk-opt-' + cmdkIndex);
+  const cur = document.getElementById('cmdk-opt-' + cmdkIndex);
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+}
+
+function cmdkRun(i) {
+  const c = cmdkItems[i];
+  if (!c) return;
+  closePalette();
+  try {
+    const r = c.run();
+    if (r && typeof r.catch === 'function') {
+      r.catch(e => showToast('That command failed: ' + e.message, 'error'));
+    }
+  } catch (e) {
+    showToast('That command failed: ' + e.message, 'error');
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
+      (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    if (cmdkOpen) closePalette(); else openPalette();
+    return;
+  }
+  if (!cmdkOpen) return;
+  if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); cmdkMove(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); cmdkMove(-1); }
+  else if (e.key === 'Enter') { e.preventDefault(); cmdkRun(cmdkIndex); }
+  else if (e.key === 'Tab') {
+    // Keep focus inside the dialog: the input and the close button.
+    e.preventDefault();
+    const input = document.getElementById('cmdkInput');
+    const closeBtn = document.getElementById('cmdkCloseBtn');
+    (document.activeElement === input ? closeBtn : input).focus();
+  }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('cmdkInput');
+  input.addEventListener('input', cmdkFilter);
+  document.getElementById('cmdkCloseBtn').addEventListener('click', closePalette);
+  document.getElementById('cmdkBackdrop').addEventListener('mousedown', (e) => {
+    if (e.target.id === 'cmdkBackdrop') closePalette();
+  });
+  const list = document.getElementById('cmdkList');
+  // mousedown, not click: keep focus in the input until the command runs.
+  list.addEventListener('mousedown', (e) => e.preventDefault());
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('.cmdk-item');
+    if (li) cmdkRun(Number(li.dataset.idx));
+  });
+  list.addEventListener('mousemove', (e) => {
+    const li = e.target.closest('.cmdk-item');
+    if (li && Number(li.dataset.idx) !== cmdkIndex) cmdkMove(Number(li.dataset.idx) - cmdkIndex);
+  });
+  navPaint('home');
+  homePaintGreeting();
+});
 
 // ─── Scheduled Posting (Buffer hybrid) ──────────────────
 //
@@ -3544,7 +4841,8 @@ function schpPaintPlatform() {
   document.querySelectorAll('.schp-plat').forEach(b => {
     const on = b.dataset.plat === schpPlatform;
     b.style.background = on ? 'var(--accent, #2b6cb0)' : 'transparent';
-    b.style.color = on ? '#fff' : 'var(--text-dim)';
+    // Dark text on the gold accent: white on gold fails contrast.
+    b.style.color = on ? 'var(--on-gold, #1a1205)' : 'var(--text-dim)';
     b.style.fontWeight = on ? '600' : '400';
   });
 }
